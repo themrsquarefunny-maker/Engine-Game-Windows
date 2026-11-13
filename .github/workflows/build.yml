@@ -1,0 +1,38 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compilar plantilla y editor
+        run: |
+          set -e
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          PL=$(ls -d $ANDROID_HOME/platforms/android-* | sort -V | tail -1)/android.jar
+          mkdir -p tobj tout eobj eout pack/assets apksig
+
+          # 1) Plantilla del juego (Android 7 = API 24 en adelante)
+          $BT/aapt2 link -o tpl.apk -I $PL --manifest PlayerManifest.xml --min-sdk-version 24 --target-sdk-version 28
+          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL -d tobj Game.java GameView.java PlayActivity.java
+          $BT/d8 --release --min-api 24 --lib $PL --output tout $(find tobj -name '*.class')
+          zip -j tpl.apk tout/classes.dex
+          cp tpl.apk pack/assets/template.apk
+
+          # 2) Editor (lleva la plantilla dentro de assets)
+          unzip -q $BT/lib/apksigner.jar 'com/android/apksig/*' -d apksig
+          $BT/aapt2 link -o base.apk -I $PL --manifest AndroidManifest.xml --min-sdk-version 26 --target-sdk-version 33
+          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL:apksig -d eobj Game.java GameView.java PlayActivity.java EditorActivity.java Exporter.java Sign.java
+          $BT/d8 --release --min-api 26 --lib $PL --output eout $(find eobj apksig -name '*.class')
+          zip -j base.apk eout/classes.dex
+          (cd pack && zip -r ../base.apk assets)
+          $BT/zipalign -f 4 base.apk aligned.apk
+          keytool -genkeypair -keystore k.jks -alias a -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=Motor"
+          $BT/apksigner sign --ks k.jks --ks-pass pass:123456 --out motor.apk aligned.apk
+          ls -l motor.apk tpl.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motor-apk
+          path: motor.apk
