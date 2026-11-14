@@ -24,7 +24,7 @@ jobs:
           # 2) Editor (lleva la plantilla dentro de assets)
           unzip -q $BT/lib/apksigner.jar 'com/android/apksig/*' -d apksig
           $BT/aapt2 link -o base.apk -I $PL --manifest AndroidManifest.xml --min-sdk-version 26 --target-sdk-version 33
-          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL:apksig -d eobj Game.java GameView.java PlayActivity.java EditorActivity.java Exporter.java Sign.java
+          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL:apksig -d eobj Game.java GameView.java PlayActivity.java EditorActivity.java ProjectsActivity.java Exporter.java Sign.java
           $BT/d8 --release --min-api 26 --lib $PL --output eout $(find eobj apksig -name '*.class')
           zip -j base.apk eout/classes.dex
           (cd pack && zip -r ../base.apk assets)
@@ -36,3 +36,4 @@ jobs:
         with:
           name: motor-apk
           path: motor.apk
+          
