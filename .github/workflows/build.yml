@@ -12,10 +12,21 @@ jobs:
           set -e
           BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
           PL=$(ls -d $ANDROID_HOME/platforms/android-* | sort -V | tail -1)/android.jar
-          mkdir -p tobj tout eobj eout pack/assets apksig
+          mkdir -p tobj tout eobj eout pack/assets apksig res/mipmap-xxxhdpi
+
+          # Ícono de relleno de la plantilla (se reemplaza al exportar)
+          python3 -c "
+          import zlib,struct
+          w=h=192
+          raw=b''.join(b'\x00'+bytes([40,120,220,255])*w for _ in range(h))
+          def ch(t,d): return struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d)&0xffffffff)
+          png=b'\x89PNG\r\n\x1a\n'+ch(b'IHDR',struct.pack('>IIBBBBB',w,h,8,6,0,0,0))+ch(b'IDAT',zlib.compress(raw,9))+ch(b'IEND',b'')
+          open('res/mipmap-xxxhdpi/ic.png','wb').write(png)
+          "
+          $BT/aapt2 compile --dir res -o res.zip
 
           # 1) Plantilla del juego (Android 7 = API 24 en adelante)
-          $BT/aapt2 link -o tpl.apk -I $PL --manifest PlayerManifest.xml --min-sdk-version 24 --target-sdk-version 28
+          $BT/aapt2 link -o tpl.apk -I $PL --manifest PlayerManifest.xml --min-sdk-version 24 --target-sdk-version 28 res.zip
           javac -encoding UTF-8 -source 8 -target 8 -classpath $PL -d tobj Game.java GameView.java PlayActivity.java
           $BT/d8 --release --min-api 24 --lib $PL --output tout $(find tobj -name '*.class')
           zip -j tpl.apk tout/classes.dex
