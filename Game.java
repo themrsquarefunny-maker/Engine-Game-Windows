@@ -50,7 +50,7 @@ public class Game {
         void sync(Game g);
     }
 
-    public static final String[] TYPES = {"Image", "Button", "ImageButton", "Label", "Sound", "AnimatedSprite", "Video", "Camera2D"};
+    public static final String[] TYPES = {"Image", "Button", "ImageButton", "Label", "Sound", "AnimatedSprite", "Video", "Camera2D", "Group"};
 
     // ================= Valores de enum =================
     public static class EnumVal {
@@ -137,7 +137,8 @@ public class Game {
         public String name = "", type = "", res = "", snd = "", text = "", follow = "";
         public int parent = -1;
         public boolean inherit = true, visible = true, loop, autoplay, fit = true, fixed;
-        public boolean current, lim;
+        public boolean current, lim, dim = true, swiped;
+        public int swPid = -1, tch = -1;
         public boolean touchAlways, smart, smartMaj, bold, italic, shadow, wrap = true, vdone;
         public int smartRes = 32, align = 1, valign = 1, color = 0xFFFFFFFF, ocolor = 0xFF000000;
         public float outline = 0f, vol = 1f, vseek;
@@ -193,6 +194,7 @@ public class Game {
             o.put("lr", lr);
             o.put("lb", lb);
             o.put("ta", touchAlways);
+            o.put("dk", dim);
             o.put("sm", smart);
             o.put("smr", smartRes);
             o.put("smm", smartMaj);
@@ -246,6 +248,7 @@ public class Game {
             n.lr = (float) o.optDouble("lr", 1280);
             n.lb = (float) o.optDouble("lb", 720);
             n.touchAlways = o.optBoolean("ta", false);
+            n.dim = o.optBoolean("dk", true);
             n.smart = o.optBoolean("sm", false);
             n.smartRes = o.optInt("smr", 32);
             n.smartMaj = o.optBoolean("smm", false);
@@ -343,6 +346,8 @@ public class Game {
         ArrayList<Frame> stack = new ArrayList<Frame>();
         float wait;
         boolean done, fresh;
+        Blk tb;
+        float tt;
     }
 
     static class Hold {
@@ -360,7 +365,7 @@ public class Game {
     public boolean landscape = true, autosave = true;
     public String stretch = "keep", viewMode = "viewport";
     public int vw = 1280, vh = 720, vwL = 1280, vhL = 720, vwP = 720, vhP = 1280;
-    public int bg = 0xFF121212, nextId = 1, nextSceneId = 1, startId = 1;
+    public int bg = 0xFF202020, nextId = 1, nextSceneId = 1, startId = 1;
     public Src src;
     public Store store;
     public Host host;
@@ -375,6 +380,8 @@ public class Game {
     HashMap<String, Node> nameMap;
     boolean hasPoll, orientChanged, useCam, snap, camSnap = true, hasVideo;
     public Layer layer;
+    java.util.Random rnd = new java.util.Random();
+    int swipeState = -1;
     public int sceneSerial;
     String pendingScene;
     Node cam;
@@ -470,7 +477,7 @@ public class Game {
         g.stretch = o.optString("st", "keep");
         g.viewMode = o.optString("vm", "viewport");
         g.autosave = o.optBoolean("asave", true);
-        g.bg = o.optInt("bg", 0xFF121212);
+        g.bg = o.optInt("bg", 0xFF202020);
         if (o.has("vwL")) {
             g.vwL = Math.max(16, o.optInt("vwL", 1280));
             g.vhL = Math.max(16, o.optInt("vhL", 720));
@@ -1221,14 +1228,74 @@ public class Game {
         return s;
     }
 
+    static float pf0(String s, float d) {
+        try {
+            return Float.parseFloat(s.trim());
+        } catch (Exception e) {
+            return d;
+        }
+    }
+
+    boolean hasExtra(Blk b) {
+        return pf0(b.s("nc"), 0) > 0 || !b.s("prob").trim().isEmpty() || !b.s("touch").isEmpty()
+                || pf0(b.s("tsec"), 0) > 0;
+    }
+
+    boolean probPass(Blk b) {
+        String ps = b.s("prob").trim();
+        if (ps.isEmpty()) return true;
+        return rnd.nextFloat() < pf0(ps, 1f);
+    }
+
+    // Condiciones (primera + las extra unidas con Y) y "tocar"; sin probabilidad
+    boolean condCore(Blk b, Node self) {
+        boolean res = true;
+        if (!(b.s("l").trim().isEmpty() && b.s("r").trim().isEmpty() && hasExtra(b))) {
+            res = cond1(b.s("l"), b.s("op"), b.s("r"), b.b("not"), self);
+        }
+        int nc = (int) pf0(b.s("nc"), 0);
+        for (int i = 1; i <= nc && res; i++) {
+            String k = "c" + i + "_";
+            String l = b.s(k + "l"), r = b.s(k + "r");
+            if (l.trim().isEmpty() && r.trim().isEmpty()) continue;
+            res = cond1(l, b.s(k + "op"), r, b.b(k + "n"), self);
+        }
+        String tc = b.s("touch");
+        if (res && tc.equals("hold")) res = self != null && self.pressed;
+        else if (res && tc.equals("swipe")) res = self != null && self.swiped;
+        return res;
+    }
+
     boolean cond(Blk b, Node self) {
-        Object l = val(b.s("l"), self);
+        return condCore(b, self) && probPass(b);
+    }
+
+    // 0 = falso, 1 = verdadero, 2 = esperando a que pase el tiempo
+    int condState(Task t, Blk b) {
+        float ts = pf0(b.s("tsec"), 0);
+        if (ts <= 0) return cond(b, t.self) ? 1 : 0;
+        if (!condCore(b, t.self)) {
+            t.tb = null;
+            return 0;
+        }
+        if (t.tb != b) {
+            t.tb = b;
+            t.tt = 0;
+        }
+        if (t.tt >= ts) {
+            t.tb = null;
+            return probPass(b) ? 1 : 0;
+        }
+        return 2;
+    }
+
+    boolean cond1(String ls, String op, String rs, boolean not, Node self) {
+        Object l = val(ls, self);
         boolean res;
-        if (b.s("r").trim().isEmpty()) {
+        if (rs.trim().isEmpty()) {
             res = truthy(l);
         } else {
-            Object r = val(b.s("r"), self);
-            String op = b.s("op");
+            Object r = val(rs, self);
             if (l instanceof Number && r instanceof Number) {
                 double x = num(l), y = num(r);
                 switch (op) {
@@ -1246,7 +1313,7 @@ public class Game {
                 else res = false;
             }
         }
-        return b.b("not") ? !res : res;
+        return not ? !res : res;
     }
 
     Node tgt(Blk b, Node self) {
@@ -1395,6 +1462,9 @@ public class Game {
                     t.vcmd = "reload";
                 }
                 break;
+            case "breakloop":
+                if (t.type.equals("AnimatedSprite") || t.type.equals("Video")) t.loop = false;
+                break;
             case "quit":
                 if (!edit && host != null) host.quit();
                 break;
@@ -1492,16 +1562,42 @@ public class Game {
             }
             Blk b = f.list.get(f.idx++);
             switch (b.t) {
-                case "if":
-                    f.chain = cond(b, t.self);
+                case "if": {
+                    int st = condState(t, b);
+                    if (st == 2) {
+                        f.idx--;
+                        t.wait = 0.0001f;
+                        break;
+                    }
+                    f.chain = st == 1;
                     if (f.chain) push(t, b.body, 0, 0, null);
                     break;
+                }
                 case "elif":
-                    if (!f.chain && cond(b, t.self)) {
-                        f.chain = true;
-                        push(t, b.body, 0, 0, null);
+                    if (!f.chain) {
+                        int st = condState(t, b);
+                        if (st == 2) {
+                            f.idx--;
+                            t.wait = 0.0001f;
+                            break;
+                        }
+                        if (st == 1) {
+                            f.chain = true;
+                            push(t, b.body, 0, 0, null);
+                        }
                     }
                     break;
+                case "breakrep": {
+                    int k = -1;
+                    for (int q = t.stack.size() - 1; q >= 0; q--) {
+                        if (t.stack.get(q).kind == 1) {
+                            k = q;
+                            break;
+                        }
+                    }
+                    if (k >= 0) while (t.stack.size() > k) t.stack.remove(t.stack.size() - 1);
+                    break;
+                }
                 case "else":
                     if (!f.chain) push(t, b.body, 0, 0, null);
                     f.chain = true;
@@ -1557,6 +1653,7 @@ public class Game {
     }
 
     void enterScene(Scene sc) {
+        swipeState = -1;
         release();
         curScene = sc;
         if (!edit && sc.raw != null) {
@@ -1739,6 +1836,7 @@ public class Game {
                 t.fresh = false;
                 continue;
             }
+            if (t.tb != null) t.tt += dt;
             if (t.wait > 0f) {
                 t.wait -= dt;
                 if (t.wait > 0f) continue;
@@ -1770,11 +1868,46 @@ public class Game {
     // ================= Entrada =================
     boolean touchable(Node n) {
         if (n.type.equals("Button") || n.type.equals("ImageButton")) return true;
-        for (int i = 0; i < n.script.size(); i++) {
-            String t = n.script.get(i).t;
-            if (t.equals("press") || t.equals("hold")) return true;
+        if (n.tch < 0) n.tch = wantsTouch(n.script) ? 1 : 0;
+        return n.tch == 1;
+    }
+
+    boolean wantsTouch(ArrayList<Blk> l) {
+        for (Blk b : l) {
+            if (b.t.equals("press") || b.t.equals("hold")) return true;
+            if ((b.t.equals("if") || b.t.equals("elif") || b.t.equals("while")) && !b.s("touch").isEmpty()) return true;
+            if (wantsTouch(b.body) || wantsTouch(b.els)) return true;
         }
         return false;
+    }
+
+    boolean scanSwipe(ArrayList<Blk> l) {
+        for (Blk b : l) {
+            if ("swipe".equals(b.s("touch"))) return true;
+            if (scanSwipe(b.body) || scanSwipe(b.els)) return true;
+        }
+        return false;
+    }
+
+    // Dedo que se desliza por encima de un nodo (condición "Pasar dedo")
+    public void move(int pid, float vx, float vy) {
+        if (swipeState < 0) {
+            swipeState = 0;
+            for (Node n : nodes) if (scanSwipe(n.script)) swipeState = 1;
+        }
+        if (swipeState == 0) return;
+        Node h = hit(vx, vy, true);
+        for (int i = 0; i < nodes.size(); i++) {
+            Node n = nodes.get(i);
+            if (n.swPid == pid && n != h) {
+                n.swPid = -1;
+                n.swiped = false;
+            }
+        }
+        if (h != null && h.swPid != pid) {
+            h.swPid = pid;
+            h.swiped = true;
+        }
     }
 
     public float toVx(float px) {
@@ -1791,6 +1924,7 @@ public class Game {
         for (int i = order.size() - 1; i >= 0; i--) {
             Node n = order.get(i);
             if (!n.wvis) continue;
+            if (edit && n.type.equals("Sound")) continue;
             if (onlyTouchable && ((n.wa <= 0.003f && !n.touchAlways) || !touchable(n))) continue;
             float px = (useCam && !n.fixed) ? cx : vx;
             float py = (useCam && !n.fixed) ? cy : vy;
@@ -1827,6 +1961,10 @@ public class Game {
                 n.pid = -1;
                 n.pressed = false;
             }
+            if (n.swPid == pid) {
+                n.swPid = -1;
+                n.swiped = false;
+            }
         }
     }
 
@@ -1834,6 +1972,8 @@ public class Game {
         for (Node n : nodes) {
             n.pid = -1;
             n.pressed = false;
+            n.swPid = -1;
+            n.swiped = false;
         }
     }
 
@@ -1884,6 +2024,66 @@ public class Game {
         cx = Math.max(0, Math.min(m.w - 1, cx));
         cy = Math.max(0, Math.min(m.h - 1, cy));
         return m.b[cy * m.w + cx];
+    }
+
+    // 8 manijas redondas: 4 esquinas y 4 lados (0 = arriba izq., sentido horario)
+    static final int[] HC = {0, 1, 2, 2, 2, 1, 0, 0}, HR = {0, 0, 0, 1, 2, 2, 2, 1};
+
+    float hx(Node n, int i) {
+        return n.wx + n.w * HC[i] / 2f;
+    }
+
+    float hy(Node n, int i) {
+        return n.wy + n.h * HR[i] / 2f;
+    }
+
+    void drawHandles(Canvas c, Node n) {
+        float k = 1f / Math.max(0.1f, sx);
+        for (int i = 0; i < 8; i++) {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xFFFFFFFF);
+            c.drawCircle(hx(n, i), hy(n, i), 11f * k, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(2.5f * k);
+            p.setColor(0xFF00AAFF);
+            c.drawCircle(hx(n, i), hy(n, i), 11f * k, p);
+        }
+        p.setStyle(Paint.Style.FILL);
+    }
+
+    public int handleAt(Node n, float vx, float vy, float tol) {
+        int best = -1;
+        float bd = tol * tol;
+        for (int i = 0; i < 8; i++) {
+            float dx = vx - hx(n, i), dy = vy - hy(n, i);
+            float d = dx * dx + dy * dy;
+            if (d <= bd) {
+                bd = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    public void resizeBy(Node n, int h, float dx, float dy) {
+        int col = HC[h], row = HR[h];
+        if (col == 0) {
+            if (n.w - dx >= 4f) {
+                n.x += dx;
+                n.w -= dx;
+            }
+        } else if (col == 2) {
+            if (n.w + dx >= 4f) n.w += dx;
+        }
+        if (row == 0) {
+            if (n.h - dy >= 4f) {
+                n.y += dy;
+                n.h -= dy;
+            }
+        } else if (row == 2) {
+            if (n.h + dy >= 4f) n.h += dy;
+        }
+        n.fit = false;
     }
 
     void drawMask(Canvas c, Node n) {
@@ -2090,6 +2290,7 @@ public class Game {
             p.setColor(0xFFFF00FF);
             c.drawRect(sel.wx, sel.wy, sel.wx + sel.w, sel.wy + sel.h, p);
             p.setStyle(Paint.Style.FILL);
+            drawHandles(c, sel);
         }
         c.restore();
     }
@@ -2127,7 +2328,7 @@ public class Game {
         tp.setTextSize(Math.max(14f, Math.min(n.h * 0.3f, 36f)));
         tp.setTextAlign(Paint.Align.CENTER);
         String label = n.name;
-        if (n.type.equals("Sound")) label = "♪ " + n.name;
+        if (n.type.equals("Group")) label = "▣ " + n.name;
         c.drawText(label, rf.centerX(), rf.centerY(), tp);
     }
 
@@ -2141,7 +2342,7 @@ public class Game {
             case "Image":
             case "ImageButton": {
                 Bitmap b = img(n.res);
-                int aa = (n.type.equals("ImageButton") && n.pressed) ? a * 7 / 10 : a;
+                int aa = (n.type.equals("ImageButton") && n.pressed && n.dim) ? a * 7 / 10 : a;
                 if (b != null) {
                     p.setAlpha(aa);
                     c.drawBitmap(b, null, rf, p);
@@ -2188,6 +2389,8 @@ public class Game {
                 }
                 break;
             case "Sound":
+                break;
+            case "Group":
                 if (edit && !snap) placeholder(c, n, a);
                 break;
             case "Camera2D":
