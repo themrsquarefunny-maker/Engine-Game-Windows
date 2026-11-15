@@ -1,12 +1,20 @@
-name: Build APK
+name: Build APK v4
 on:
   push:
+    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - name: Compilar plantilla y editor
         run: |
           set -e
@@ -14,7 +22,6 @@ jobs:
           PL=$(ls -d $ANDROID_HOME/platforms/android-* | sort -V | tail -1)/android.jar
           mkdir -p tobj tout eobj eout pack/assets apksig res/mipmap-xxxhdpi
 
-          # Ícono de relleno de la plantilla (se reemplaza al exportar)
           python3 -c "
           import zlib,struct
           w=h=192
@@ -25,26 +32,31 @@ jobs:
           "
           $BT/aapt2 compile --dir res -o res.zip
 
-          # 1) Plantilla del juego (Android 7 = API 24 en adelante)
+          # 1) Plantilla del juego (incluye VideoLayer)
           $BT/aapt2 link -o tpl.apk -I $PL --manifest PlayerManifest.xml --min-sdk-version 24 --target-sdk-version 28 res.zip
-          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL -d tobj Game.java GameView.java PlayActivity.java
+          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL -d tobj Game.java GameView.java PlayActivity.java VideoLayer.java
           $BT/d8 --release --min-api 24 --lib $PL --output tout $(find tobj -name '*.class')
           zip -j tpl.apk tout/classes.dex
           cp tpl.apk pack/assets/template.apk
 
-          # 2) Editor (lleva la plantilla dentro de assets)
+          # 2) Editor
           unzip -q $BT/lib/apksigner.jar 'com/android/apksig/*' -d apksig
           $BT/aapt2 link -o base.apk -I $PL --manifest AndroidManifest.xml --min-sdk-version 26 --target-sdk-version 33
-          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL:apksig -d eobj Game.java GameView.java PlayActivity.java EditorActivity.java ProjectsActivity.java Exporter.java Sign.java
+          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL:apksig -d eobj Game.java GameView.java PlayActivity.java VideoLayer.java EditorActivity.java ProjectsActivity.java Exporter.java Sign.java
           $BT/d8 --release --min-api 26 --lib $PL --output eout $(find eobj apksig -name '*.class')
           zip -j base.apk eout/classes.dex
           (cd pack && zip -r ../base.apk assets)
           $BT/zipalign -f 4 base.apk aligned.apk
           keytool -genkeypair -keystore k.jks -alias a -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=Motor"
-          $BT/apksigner sign --ks k.jks --ks-pass pass:123456 --out motor.apk aligned.apk
-          ls -l motor.apk tpl.apk
+          $BT/apksigner sign --ks k.jks --ks-pass pass:123456 --out motor-v4.apk aligned.apk
+          ls -l motor-v4.apk tpl.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: motor-apk
-          path: motor.apk
+          name: motor-apk-v4
+          path: motor-v4.apk
+      - name: Publicar release (solo con tag vX)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: motor-v4.apk
           
