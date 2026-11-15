@@ -16,13 +16,15 @@ public class GameView extends View {
     boolean edit, wasActive = true;
     long last;
     Game.Node drag;
-    float lx, ly;
+    float lx, ly, dens = 1f;
+    int rh = -1;
 
     public GameView(Context c, Game g, boolean edit) {
         super(c);
         this.g = g;
         this.edit = edit;
         g.edit = edit;
+        dens = c.getResources().getDisplayMetrics().density;
     }
 
     @Override
@@ -46,6 +48,10 @@ public class GameView extends View {
             if (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_POINTER_DOWN) {
                 int i = e.getActionIndex();
                 g.down(e.getPointerId(i), g.toVx(e.getX(i)), g.toVy(e.getY(i)));
+            } else if (a == MotionEvent.ACTION_MOVE) {
+                for (int i = 0; i < e.getPointerCount(); i++) {
+                    g.move(e.getPointerId(i), g.toVx(e.getX(i)), g.toVy(e.getY(i)));
+                }
             } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_POINTER_UP) {
                 g.up(e.getPointerId(e.getActionIndex()));
             } else if (a == MotionEvent.ACTION_CANCEL) {
@@ -56,20 +62,35 @@ public class GameView extends View {
         }
         float vx = g.toVx(e.getX()), vy = g.toVy(e.getY());
         if (a == MotionEvent.ACTION_DOWN) {
+            rh = -1;
+            if (g.sel != null && g.sel.inOrder) {
+                rh = g.handleAt(g.sel, vx, vy, 26f * dens / Math.max(0.1f, g.sx));
+            }
+            if (rh >= 0) {
+                drag = g.sel;
+                lx = vx;
+                ly = vy;
+                return true;
+            }
             drag = g.hit(vx, vy, false);
             lx = vx;
             ly = vy;
             if (l != null) l.sel(drag);
         } else if (a == MotionEvent.ACTION_MOVE) {
             if (drag != null) {
-                drag.x += vx - lx;
-                drag.y += vy - ly;
+                if (rh >= 0) {
+                    g.resizeBy(drag, rh, vx - lx, vy - ly);
+                } else {
+                    drag.x += vx - lx;
+                    drag.y += vy - ly;
+                }
                 lx = vx;
                 ly = vy;
             }
         } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
             if (drag != null && l != null) l.moved(drag);
             drag = null;
+            rh = -1;
         }
         return true;
     }

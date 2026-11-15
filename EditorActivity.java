@@ -93,6 +93,8 @@ public class EditorActivity extends Activity {
         {"repeat", "Repetir (veces)", "S", "n:Veces:V"},
         {"forever", "Repetir siempre", "S"},
         {"break", "Romper (salir del bucle)", "S"},
+        {"breakrep", "Romper el bloque Repetir (veces)", "S"},
+        {"breakloop", "Romper loop (animación o video)", "S", "node:Nodo (AnimatedSprite o Video):G"},
         {"wait", "Esperar (segundos)", "S", "secs:Segundos:N"},
         {"var", "Variable (crear)", "S", "name:Nombre:R", "vtype:Tipo:Y",
             "scope:Alcance:O:global|escena|nodo", "val:Valor inicial:V"},
@@ -260,6 +262,7 @@ public class EditorActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0xFF121212));
         pid = getIntent().getStringExtra("pid");
         if (pid == null) pid = "p_v1";
         dir = new File(getFilesDir(), "projects/" + pid);
@@ -290,6 +293,7 @@ public class EditorActivity extends Activity {
         if (g == null) g = new Game(src);
 
         LinearLayout root = vbox();
+        root.setBackgroundColor(0xFF121212);
         pv = new GameView(this, g, true);
         pv.l = new GameView.L() {
             public void sel(Game.Node n) {
@@ -566,13 +570,18 @@ public class EditorActivity extends Activity {
 
         // Posición y tamaño
         final CheckBox[] fitBox = new CheckBox[1];
-        field(props, "Posición X", trimf(n.x), NUM, s -> n.x = pf(s, n.x));
-        field(props, "Posición Y", trimf(n.y), NUM, s -> n.y = pf(s, n.y));
-        field(props, "Ancho", trimf(n.w), NUM, s -> {
+        boolean showGeo = !n.type.equals("Sound");
+        if (!showGeo) {
+            for (Game.Node q : g.nodes) if (q.parent == n.id) showGeo = true;
+            if (!showGeo) props.addView(label("Nodo invisible. La posición y el tamaño solo se usan si este nodo es padre de otros."));
+        }
+        if (showGeo) field(props, "Posición X", trimf(n.x), NUM, s -> n.x = pf(s, n.x));
+        if (showGeo) field(props, "Posición Y", trimf(n.y), NUM, s -> n.y = pf(s, n.y));
+        if (showGeo) field(props, "Ancho", trimf(n.w), NUM, s -> {
             n.w = Math.max(1f, pf(s, n.w));
             if (fitBox[0] != null && fitBox[0].isChecked()) fitBox[0].setChecked(false);
         });
-        field(props, "Alto", trimf(n.h), NUM, s -> {
+        if (showGeo) field(props, "Alto", trimf(n.h), NUM, s -> {
             n.h = Math.max(1f, pf(s, n.h));
             if (fitBox[0] != null && fitBox[0].isChecked()) fitBox[0].setChecked(false);
         });
@@ -583,6 +592,9 @@ public class EditorActivity extends Activity {
             check(props, "Toque inteligente (solo donde se dibuja la imagen, ignora transparencias)", n.smart, s -> n.smart = s.equals("true"));
             field(props, "Precisión del toque (8 a 256, menor = más rápido)", trimf(n.smartRes), NUM,
                     s -> n.smartRes = Math.max(8, Math.min(256, (int) pf(s, n.smartRes))));
+            if (n.type.equals("ImageButton")) {
+                check(props, "Oscurecer al tocar", n.dim, s -> n.dim = s.equals("true"));
+            }
             props.addView(btn("Elegir imagen", x -> chooseAsset(true, s -> {
                 n.res = s;
                 if (n.fit) g.fitNode(n);
@@ -642,6 +654,8 @@ public class EditorActivity extends Activity {
                 rebuildProps();
             }));
             props.addView(label("La vista previa solo se ve aquí; no afecta al juego."));
+        } else if (n.type.equals("Group")) {
+            props.addView(label("Grupo: no se dibuja. Pon nodos dentro (eligiéndolo como Padre) para moverlos, ocultarlos o cambiar su modulate todos a la vez."));
         } else if (n.type.equals("Video")) {
             props.addView(label("Video: " + (n.res.isEmpty() ? "(ninguno)" : n.res)));
             props.addView(btn("Elegir video (mp4, webm, mkv)", x -> chooseVideo(s -> {
@@ -1289,8 +1303,9 @@ public class EditorActivity extends Activity {
     }
 
     void showPicker(Bitmap bm, boolean fromGame, float gw, float gh, float x0, float y0, final Xy cb) {
-        final Dialog d = new Dialog(this, android.R.style.Theme_Material_Light_NoActionBar);
+        final Dialog d = new Dialog(this, android.R.style.Theme_Material_NoActionBar);
         LinearLayout root = vbox();
+        root.setBackgroundColor(0xFF121212);
         TextView head = new TextView(this);
         head.setText(fromGame ? "Última partida: arrastra el recuadro a su lugar"
                 : "Escena del editor (aún no hay partida guardada): arrastra el recuadro");
@@ -1367,13 +1382,25 @@ public class EditorActivity extends Activity {
 
     static boolean control(String t) {
         return t.equals("if") || t.equals("elif") || t.equals("else") || t.equals("while")
-                || t.equals("repeat") || t.equals("forever") || t.equals("wait") || t.equals("break");
+                || t.equals("repeat") || t.equals("forever") || t.equals("wait") || t.equals("break")
+                || t.equals("breakrep");
     }
 
     String describe(Game.Blk b) {
         String[] sp = specOf(b.t);
         if (b.t.equals("if") || b.t.equals("elif") || b.t.equals("while")) {
-            return sp[1] + "  " + (b.b("not") ? "NOT " : "") + b.s("l") + " " + b.s("op") + " " + b.s("r");
+            StringBuilder sc = new StringBuilder(sp[1] + "  " + (b.b("not") ? "NOT " : "") + b.s("l") + " " + b.s("op") + " " + b.s("r"));
+            int nc = (int) pf(b.s("nc"), 0);
+            for (int i = 1; i <= nc; i++) {
+                String k = "c" + i + "_";
+                sc.append("  Y  ").append(b.b(k + "n") ? "NOT " : "").append(b.s(k + "l")).append(" ")
+                        .append(b.s(k + "op")).append(" ").append(b.s(k + "r"));
+            }
+            if (!b.s("prob").trim().isEmpty()) sc.append("  ·  prob ").append(b.s("prob"));
+            if (pf(b.s("tsec"), 0) > 0) sc.append("  ·  por ").append(b.s("tsec")).append(" s");
+            if (b.s("touch").equals("hold")) sc.append("  ·  pulsado");
+            if (b.s("touch").equals("swipe")) sc.append("  ·  pasar dedo");
+            return sc.toString();
         }
         if (b.t.equals("var")) {
             return "Variable  " + b.s("name") + " (" + b.s("vtype") + ", " + b.s("scope") + ") = " + b.s("val");
@@ -1424,8 +1451,9 @@ public class EditorActivity extends Activity {
 
     void openScript(final Game.Node n) {
         scriptOwner = n;
-        final Dialog d = new Dialog(this, android.R.style.Theme_Material_Light_NoActionBar);
+        final Dialog d = new Dialog(this, android.R.style.Theme_Material_NoActionBar);
         LinearLayout root = vbox();
+        root.setBackgroundColor(0xFF121212);
         root.addView(title("  Script de " + n.name));
         final LinearLayout box = vbox();
         box.setPadding(0, 0, 0, dp(24));
@@ -1462,7 +1490,7 @@ public class EditorActivity extends Activity {
             final Game.Blk b = list.get(i);
             final int idx = i;
             boolean ev = specOf(b.t)[2].equals("E");
-            int color = ev ? 0x44FFAA00 : control(b.t) ? 0x3300AAFF : 0x14000000;
+            int color = ev ? 0x44FFAA00 : control(b.t) ? 0x3300AAFF : 0x22FFFFFF;
             box.addView(row(depth, (ev ? "▶ " : "") + describe(b), color, x -> blockMenu(list, idx, ref)));
             if (container(b)) {
                 if (b.t.equals("hold")) box.addView(row(depth + 1, "Si sigue presionado:", 0, null));
@@ -1591,6 +1619,21 @@ public class EditorActivity extends Activity {
                         (EditText) views.get(keys.indexOf("y")));
             }));
         }
+        final HashMap<String, String> backup = new HashMap<String, String>(b.f);
+        if (b.t.equals("if") || b.t.equals("elif") || b.t.equals("while")) {
+            final LinearLayout extras = vbox();
+            v.addView(extras);
+            final Runnable[] rx = new Runnable[1];
+            rx[0] = () -> buildExtras(extras, b, rx[0]);
+            rx[0].run();
+            v.addView(btn("＋ Agregar condición (Y)", x -> {
+                int nc = (int) pf(b.s("nc"), 0) + 1;
+                b.f.put("nc", String.valueOf(nc));
+                b.f.put("c" + nc + "_op", "=");
+                rx[0].run();
+            }));
+            v.addView(btn("⚙ Propiedades (probabilidad, tiempo, tocar)", x -> condProps(b)));
+        }
         ScrollView sv = new ScrollView(this);
         sv.addView(v);
         new AlertDialog.Builder(this).setTitle(sp[1]).setView(sv)
@@ -1614,6 +1657,116 @@ public class EditorActivity extends Activity {
                         b.f.put(keys.get(i), val);
                     }
                     ref.run();
+                }).setNegativeButton("Cancelar", (dd, ww) -> {
+                    b.f.clear();
+                    b.f.putAll(backup);
+                }).show();
+    }
+
+    // Condiciones extra unidas con "Y"; cada una con su propio operador y valores
+    void buildExtras(final LinearLayout box, final Game.Blk b, final Runnable ref) {
+        box.removeAllViews();
+        final int nc = (int) pf(b.s("nc"), 0);
+        final String[] ops = {"=", "!=", "<", ">", "<=", ">="};
+        for (int i = 1; i <= nc; i++) {
+            final String k = "c" + i + "_";
+            final int idx = i;
+            box.addView(title("Y  (condición " + (i + 1) + ")"));
+            box.addView(label("Valor izquierdo"));
+            box.addView(valueRow(b, k + "l"));
+            box.addView(label("Operador"));
+            Spinner sp = spinner(ops);
+            for (int q = 0; q < ops.length; q++) if (ops[q].equals(b.s(k + "op"))) sp.setSelection(q);
+            sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+                public void onItemSelected(AdapterView a, View v, int pos, long id) {
+                    b.f.put(k + "op", ops[pos]);
+                }
+
+                public void onNothingSelected(AdapterView a) {
+                }
+            });
+            box.addView(sp);
+            box.addView(label("Valor derecho (vacío = solo comprobar verdadero)"));
+            box.addView(valueRow(b, k + "r"));
+            check(box, "Not (negar esta condición)", b.b(k + "n"), s -> b.f.put(k + "n", s));
+            box.addView(btn("Quitar esta condición", x -> {
+                int n2 = (int) pf(b.s("nc"), 0);
+                for (int q = idx; q < n2; q++) {
+                    String from = "c" + (q + 1) + "_", to = "c" + q + "_";
+                    for (String suf : new String[]{"l", "op", "r", "n"}) {
+                        String val = b.s(from + suf);
+                        if (val.isEmpty()) b.f.remove(to + suf);
+                        else b.f.put(to + suf, val);
+                    }
+                }
+                for (String suf : new String[]{"l", "op", "r", "n"}) b.f.remove("c" + n2 + "_" + suf);
+                b.f.put("nc", String.valueOf(n2 - 1));
+                ref.run();
+            }));
+        }
+    }
+
+    View valueRow(final Game.Blk b, final String key) {
+        LinearLayout r = new LinearLayout(this);
+        final EditText e = new EditText(this);
+        e.setInputType(TXT);
+        e.setText(b.s(key));
+        e.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int a, int c, int d) {
+            }
+
+            public void onTextChanged(CharSequence s, int a, int c, int d) {
+            }
+
+            public void afterTextChanged(Editable s) {
+                b.f.put(key, s.toString());
+            }
+        });
+        r.addView(e, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        r.addView(btn("▼", x -> pickValue(e, "V")));
+        return r;
+    }
+
+    // Panel de propiedades del Si: probabilidad, tiempo y tocar
+    void condProps(final Game.Blk b) {
+        LinearLayout v = vbox();
+        v.setPadding(dp(20), dp(10), dp(20), dp(10));
+        final EditText ep = new EditText(this);
+        ep.setInputType(NUM);
+        ep.setText(b.s("prob"));
+        v.addView(label("Probabilidad (0 a 1, ej. 0.5 = 50%; vacío = siempre)"));
+        v.addView(ep);
+        final EditText et = new EditText(this);
+        et.setInputType(NUM);
+        et.setText(b.s("tsec"));
+        final boolean timed = !b.t.equals("while");
+        if (timed) {
+            v.addView(label("Por [X] segundos al terminar: la condición debe mantenerse todo ese tiempo (vacío o 0 = sin tiempo)"));
+            v.addView(et);
+        }
+        v.addView(label("Tocar (sobre el nodo de este script)"));
+        final String[] tl = {"(ninguno)", "Mantener pulsado", "Pasar dedo"};
+        final Spinner st = spinner(tl);
+        st.setSelection(b.s("touch").equals("hold") ? 1 : b.s("touch").equals("swipe") ? 2 : 0);
+        v.addView(st);
+        ScrollView sv = new ScrollView(this);
+        sv.addView(v);
+        new AlertDialog.Builder(this).setTitle("Propiedades del " + specOf(b.t)[1]).setView(sv)
+                .setPositiveButton("Aceptar", (d, w) -> {
+                    String ps = ep.getText().toString().trim();
+                    if (ps.isEmpty()) {
+                        b.f.remove("prob");
+                    } else {
+                        b.f.put("prob", fmt1(Math.max(0f, Math.min(1f, pf(ps, 1f)))));
+                    }
+                    if (timed) {
+                        float ts = pf(et.getText().toString(), 0);
+                        if (ts <= 0) b.f.remove("tsec");
+                        else b.f.put("tsec", fmt1(ts));
+                    }
+                    int p = st.getSelectedItemPosition();
+                    if (p == 0) b.f.remove("touch");
+                    else b.f.put("touch", p == 1 ? "hold" : "swipe");
                 }).setNegativeButton("Cancelar", null).show();
     }
 }

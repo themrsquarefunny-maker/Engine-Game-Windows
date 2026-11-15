@@ -38,6 +38,7 @@ public class ProjectsActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0xFF121212));
         root = new File(getFilesDir(), "projects");
         root.mkdirs();
         migrate();
