@@ -1,4 +1,4 @@
-name: Build APK v7
+name: Build APK v7 fix3
 on:
   push:
     tags: ['v*']
