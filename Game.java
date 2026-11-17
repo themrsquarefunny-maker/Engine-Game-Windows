@@ -382,6 +382,8 @@ public class Game {
     public Layer layer;
     java.util.Random rnd = new java.util.Random();
     int swipeState = -1;
+    final float[] ptx = new float[16], pty = new float[16];
+    final boolean[] pton = new boolean[16];
     public int sceneSerial;
     String pendingScene;
     Node cam;
@@ -1230,7 +1232,7 @@ public class Game {
 
     static float pf0(String s, float d) {
         try {
-            return Float.parseFloat(s.trim());
+            return Float.parseFloat(s.trim().replace(',', '.'));
         } catch (Exception e) {
             return d;
         }
@@ -1263,7 +1265,24 @@ public class Game {
         String tc = b.s("touch");
         if (res && tc.equals("hold")) res = self != null && self.pressed;
         else if (res && tc.equals("swipe")) res = self != null && self.swiped;
+        else if (res && tc.equals("in")) res = fingerIn(self);
+        else if (res && tc.equals("out")) res = !fingerIn(self);
         return res;
+    }
+
+    // ¿Hay algún dedo tocando la pantalla justo encima de este nodo?
+    boolean fingerIn(Node n) {
+        if (n == null || !n.wvis || (n.wa <= 0.003f && !n.touchAlways)) return false;
+        for (int i = 0; i < 16; i++) {
+            if (!pton[i]) continue;
+            float vx = ptx[i], vy = pty[i];
+            boolean c = useCam && !n.fixed;
+            float px = c ? (vx - vw / 2f) / camZ + camX : vx;
+            float py = c ? (vy - vh / 2f) / camZ + camY : vy;
+            if (px >= n.wx && px <= n.wx + n.w && py >= n.wy && py <= n.wy + n.h
+                    && (!n.smart || maskHit(n, px, py))) return true;
+        }
+        return false;
     }
 
     boolean cond(Blk b, Node self) {
@@ -1891,6 +1910,11 @@ public class Game {
 
     // Dedo que se desliza por encima de un nodo (condición "Pasar dedo")
     public void move(int pid, float vx, float vy) {
+        if (pid >= 0 && pid < 16) {
+            ptx[pid] = vx;
+            pty[pid] = vy;
+            pton[pid] = true;
+        }
         if (swipeState < 0) {
             swipeState = 0;
             for (Node n : nodes) if (scanSwipe(n.script)) swipeState = 1;
@@ -1937,6 +1961,11 @@ public class Game {
     }
 
     public void down(int pid, float vx, float vy) {
+        if (pid >= 0 && pid < 16) {
+            ptx[pid] = vx;
+            pty[pid] = vy;
+            pton[pid] = true;
+        }
         Node n = hit(vx, vy, true);
         if (n == null) return;
         n.pressed = true;
@@ -1956,6 +1985,7 @@ public class Game {
     }
 
     public void up(int pid) {
+        if (pid >= 0 && pid < 16) pton[pid] = false;
         for (Node n : nodes) {
             if (n.pid == pid) {
                 n.pid = -1;
@@ -1969,6 +1999,7 @@ public class Game {
     }
 
     public void upAll() {
+        for (int i = 0; i < 16; i++) pton[i] = false;
         for (Node n : nodes) {
             n.pid = -1;
             n.pressed = false;

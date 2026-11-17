@@ -219,7 +219,7 @@ public class EditorActivity extends Activity {
 
     static float pf(String s, float def) {
         try {
-            return Float.parseFloat(s.trim());
+            return Float.parseFloat(s.trim().replace(',', '.'));
         } catch (Exception e) {
             return def;
         }
@@ -1398,8 +1398,7 @@ public class EditorActivity extends Activity {
             }
             if (!b.s("prob").trim().isEmpty()) sc.append("  ·  prob ").append(b.s("prob"));
             if (pf(b.s("tsec"), 0) > 0) sc.append("  ·  por ").append(b.s("tsec")).append(" s");
-            if (b.s("touch").equals("hold")) sc.append("  ·  pulsado");
-            if (b.s("touch").equals("swipe")) sc.append("  ·  pasar dedo");
+            if (!b.s("touch").isEmpty()) sc.append("  ·  ").append(touchText(b.s("touch")));
             return sc.toString();
         }
         if (b.t.equals("var")) {
@@ -1554,9 +1553,11 @@ public class EditorActivity extends Activity {
         final ArrayList<String> keys = new ArrayList<String>();
         final ArrayList<String> kinds = new ArrayList<String>();
         final ArrayList<String[]> holders = new ArrayList<String[]>();
+        final boolean isCond = b.t.equals("if") || b.t.equals("elif") || b.t.equals("while");
         for (int i = 3; i < sp.length; i++) {
             String[] p = sp[i].split(":", 4);
             final String key = p[0], lab = p[1], kind = p[2];
+            if (isCond && (key.equals("l") || key.equals("op") || key.equals("r") || key.equals("not"))) continue;
             String opt = p.length > 3 ? p[3] : "";
             String cur = b.s(key);
             v.addView(label(lab));
@@ -1620,11 +1621,13 @@ public class EditorActivity extends Activity {
             }));
         }
         final HashMap<String, String> backup = new HashMap<String, String>(b.f);
-        if (b.t.equals("if") || b.t.equals("elif") || b.t.equals("while")) {
-            final LinearLayout extras = vbox();
+        if (isCond) {
+            final LinearLayout mods = vbox(), extras = vbox();
+            final Runnable[] rm = new Runnable[1], rx = new Runnable[1];
+            rm[0] = () -> buildMods(mods, b, rm[0]);
+            rx[0] = () -> buildExtras(extras, b, rx[0], rm[0]);
+            condCard(v, b, "l", "op", "r", "not", rm[0]);
             v.addView(extras);
-            final Runnable[] rx = new Runnable[1];
-            rx[0] = () -> buildExtras(extras, b, rx[0]);
             rx[0].run();
             v.addView(btn("＋ Agregar condición (Y)", x -> {
                 int nc = (int) pf(b.s("nc"), 0) + 1;
@@ -1632,7 +1635,9 @@ public class EditorActivity extends Activity {
                 b.f.put("c" + nc + "_op", "=");
                 rx[0].run();
             }));
-            v.addView(btn("⚙ Propiedades (probabilidad, tiempo, tocar)", x -> condProps(b)));
+            v.addView(title("Tiempo, probabilidad y tocar"));
+            v.addView(mods);
+            rm[0].run();
         }
         ScrollView sv = new ScrollView(this);
         sv.addView(v);
@@ -1663,32 +1668,30 @@ public class EditorActivity extends Activity {
                 }).show();
     }
 
+    static final String[][] OPS = {{"=", "igual a"}, {"!=", "distinto de"}, {"<", "menor que"},
+        {">", "mayor que"}, {"<=", "menor o igual que"}, {">=", "mayor o igual que"}};
+
+    static String opText(String op) {
+        for (String[] o : OPS) if (o[0].equals(op)) return o[0] + "   (" + o[1] + ")";
+        return op;
+    }
+
+    static String touchText(String t) {
+        if (t.equals("in")) return "Al pasar dedo: dedo dentro del botón";
+        if (t.equals("out")) return "Al pasar dedo: dedo fuera";
+        if (t.equals("hold")) return "Mantener pulsado";
+        return t.equals("swipe") ? "Al pasar dedo" : "";
+    }
+
     // Condiciones extra unidas con "Y"; cada una con su propio operador y valores
-    void buildExtras(final LinearLayout box, final Game.Blk b, final Runnable ref) {
+    void buildExtras(final LinearLayout box, final Game.Blk b, final Runnable ref, final Runnable mr) {
         box.removeAllViews();
         final int nc = (int) pf(b.s("nc"), 0);
-        final String[] ops = {"=", "!=", "<", ">", "<=", ">="};
         for (int i = 1; i <= nc; i++) {
             final String k = "c" + i + "_";
             final int idx = i;
             box.addView(title("Y  (condición " + (i + 1) + ")"));
-            box.addView(label("Valor izquierdo"));
-            box.addView(valueRow(b, k + "l"));
-            box.addView(label("Operador"));
-            Spinner sp = spinner(ops);
-            for (int q = 0; q < ops.length; q++) if (ops[q].equals(b.s(k + "op"))) sp.setSelection(q);
-            sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-                public void onItemSelected(AdapterView a, View v, int pos, long id) {
-                    b.f.put(k + "op", ops[pos]);
-                }
-
-                public void onNothingSelected(AdapterView a) {
-                }
-            });
-            box.addView(sp);
-            box.addView(label("Valor derecho (vacío = solo comprobar verdadero)"));
-            box.addView(valueRow(b, k + "r"));
-            check(box, "Not (negar esta condición)", b.b(k + "n"), s -> b.f.put(k + "n", s));
+            condCard(box, b, k + "l", k + "op", k + "r", k + "n", mr);
             box.addView(btn("Quitar esta condición", x -> {
                 int n2 = (int) pf(b.s("nc"), 0);
                 for (int q = idx; q < n2; q++) {
@@ -1706,8 +1709,27 @@ public class EditorActivity extends Activity {
         }
     }
 
-    View valueRow(final Game.Blk b, final String key) {
-        LinearLayout r = new LinearLayout(this);
+    // Una condición: valor izquierdo, operador, valor derecho, Not y un único botón "Lógica y condiciones"
+    void condCard(LinearLayout box, final Game.Blk b, String lk, final String ok, String rk, final String nk,
+            final Runnable mr) {
+        final EditText[] last = new EditText[1];
+        box.addView(label("Valor izquierdo"));
+        final EditText el = condField(b, lk, last);
+        box.addView(el);
+        box.addView(label("Operador"));
+        final TextView ov = new TextView(this);
+        ov.setTextSize(20);
+        ov.setPadding(dp(4), dp(6), 0, dp(6));
+        ov.setText(opText(b.s(ok).isEmpty() ? "=" : b.s(ok)));
+        box.addView(ov);
+        box.addView(label("Valor derecho (vacío = solo comprobar verdadero)"));
+        box.addView(condField(b, rk, last));
+        last[0] = el;
+        check(box, "Not (negar la condición)", b.b(nk), s -> b.f.put(nk, s));
+        box.addView(btn("Lógica y condiciones", x -> logicMenu(b, ok, last, el, ov, mr)));
+    }
+
+    EditText condField(final Game.Blk b, final String key, final EditText[] last) {
         final EditText e = new EditText(this);
         e.setInputType(TXT);
         e.setText(b.s(key));
@@ -1722,51 +1744,138 @@ public class EditorActivity extends Activity {
                 b.f.put(key, s.toString());
             }
         });
-        r.addView(e, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        r.addView(btn("▼", x -> pickValue(e, "V")));
-        return r;
+        e.setOnFocusChangeListener((vw, f) -> {
+            if (f) last[0] = e;
+        });
+        return e;
     }
 
-    // Panel de propiedades del Si: probabilidad, tiempo y tocar
-    void condProps(final Game.Blk b) {
+    // Menú único: Operadores / Condiciones
+    void logicMenu(final Game.Blk b, final String ok, final EditText[] last, final EditText el, final TextView ov,
+            final Runnable mr) {
         LinearLayout v = vbox();
         v.setPadding(dp(20), dp(10), dp(20), dp(10));
-        final EditText ep = new EditText(this);
-        ep.setInputType(NUM);
-        ep.setText(b.s("prob"));
-        v.addView(label("Probabilidad (0 a 1, ej. 0.5 = 50%; vacío = siempre)"));
-        v.addView(ep);
-        final EditText et = new EditText(this);
-        et.setInputType(NUM);
-        et.setText(b.s("tsec"));
-        final boolean timed = !b.t.equals("while");
-        if (timed) {
-            v.addView(label("Por [X] segundos al terminar: la condición debe mantenerse todo ese tiempo (vacío o 0 = sin tiempo)"));
-            v.addView(et);
+        v.addView(label("Los valores se insertan en: " + (last[0] == el ? "Valor izquierdo" : "Valor derecho")
+                + " (toca un campo para cambiar el destino)"));
+        final AlertDialog[] dl = new AlertDialog[1];
+        final Runnable back = () -> logicMenu(b, ok, last, el, ov, mr);
+        v.addView(btn("Operadores  ▸", x -> {
+            dl[0].dismiss();
+            String[] it = new String[OPS.length];
+            for (int i = 0; i < it.length; i++) it[i] = OPS[i][0] + "      " + OPS[i][1];
+            new AlertDialog.Builder(this).setTitle("Operadores").setItems(it, (d, i) -> {
+                b.f.put(ok, OPS[i][0]);
+                ov.setText(opText(OPS[i][0]));
+            }).setNegativeButton("Atrás", (d, w) -> back.run()).show();
+        }));
+        v.addView(btn("Condiciones  ▸", x -> {
+            dl[0].dismiss();
+            condsMenu(b, last[0], mr, back);
+        }));
+        dl[0] = new AlertDialog.Builder(this).setTitle("Lógica y condiciones").setView(v)
+                .setNegativeButton("Cerrar", null).create();
+        dl[0].show();
+    }
+
+    void condsMenu(final Game.Blk b, final EditText target, final Runnable mr, final Runnable back) {
+        final ArrayList<String> it = new ArrayList<String>();
+        it.add("Una variable");
+        it.add("Propiedad de un nodo (x, y, visible…)");
+        it.add("Valor de un Enum");
+        it.add("Verdadero (true)");
+        it.add("Falso (false)");
+        if (!b.t.equals("while")) it.add("Tiempo  ▸");
+        it.add("Probabilidad  ▸");
+        it.add("Tocar  ▸");
+        new AlertDialog.Builder(this).setTitle("Condiciones").setItems(it.toArray(new String[0]), (d, i) -> {
+            String s = it.get(i);
+            if (s.startsWith("Una")) varChooser(target, false);
+            else if (s.startsWith("Propiedad")) propChooser(target);
+            else if (s.startsWith("Valor")) enumChooser(target);
+            else if (s.startsWith("Verdadero")) target.setText("true");
+            else if (s.startsWith("Falso")) target.setText("false");
+            else if (s.startsWith("Tiempo")) numDialog(b, "tsec", "Tiempo", "Por", "segundos",
+                    "El bloque solo se ejecuta si la condición se mantiene cumplida todo ese tiempo.", false, mr, back);
+            else if (s.startsWith("Prob")) numDialog(b, "prob", "Probabilidad", "Con probabilidad", "(0 a 1)",
+                    "De 0 a 1 con decimales: 0,5 = 50%, 0,9 = 90%, 1 = siempre.", true, mr, back);
+            else touchMenu(b, mr, back);
+        }).setNegativeButton("Atrás", (d, w) -> back.run()).show();
+    }
+
+    // Cuadro "Por [X] tiempo" / "Con probabilidad [X]"
+    void numDialog(final Game.Blk b, final String key, String title, String pre, String post, String info,
+            final boolean prob, final Runnable mr, final Runnable back) {
+        LinearLayout v = vbox();
+        v.setPadding(dp(20), dp(10), dp(20), dp(10));
+        v.addView(label(info));
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        TextView t1 = new TextView(this);
+        t1.setText(pre + " [");
+        t1.setTextSize(18);
+        final EditText e = new EditText(this);
+        e.setInputType(NUM);
+        e.setText(b.s(key));
+        e.setMinEms(4);
+        TextView t2 = new TextView(this);
+        t2.setText("] " + post);
+        t2.setTextSize(18);
+        row.addView(t1);
+        row.addView(e);
+        row.addView(t2);
+        v.addView(row);
+        new AlertDialog.Builder(this).setTitle(title).setView(v).setPositiveButton("Aceptar", (d, w) -> {
+            float x = pf(e.getText().toString(), 0);
+            if (prob) {
+                if (e.getText().toString().trim().isEmpty()) b.f.remove(key);
+                else b.f.put(key, fmt1(Math.max(0f, Math.min(1f, x))));
+            } else if (x <= 0) b.f.remove(key);
+            else b.f.put(key, fmt1(x));
+            mr.run();
+        }).setNeutralButton("Quitar", (d, w) -> {
+            b.f.remove(key);
+            mr.run();
+        }).setNegativeButton("Atrás", (d, w) -> back.run()).show();
+    }
+
+    void touchMenu(final Game.Blk b, final Runnable mr, final Runnable back) {
+        final String[] it = {"Al pasar dedo  ▸", "Mantener pulsado"};
+        new AlertDialog.Builder(this).setTitle("Tocar").setItems(it, (d, i) -> {
+            if (i == 1) {
+                b.f.put("touch", "hold");
+                mr.run();
+                return;
+            }
+            final String[] f = {"Dedo dentro del botón", "Dedo fuera"};
+            new AlertDialog.Builder(this).setTitle("Al pasar dedo").setItems(f, (d2, k) -> {
+                b.f.put("touch", k == 0 ? "in" : "out");
+                mr.run();
+            }).setNegativeButton("Atrás", (d2, w) -> touchMenu(b, mr, back)).show();
+        }).setNegativeButton("Atrás", (d, w) -> back.run()).show();
+    }
+
+    // Resumen de tiempo / probabilidad / tocar activos en el bloque
+    void buildMods(final LinearLayout box, final Game.Blk b, final Runnable ref) {
+        box.removeAllViews();
+        if (pf(b.s("tsec"), 0) > 0) modRow(box, "⏱ Por " + b.s("tsec") + " s", "tsec", b, ref);
+        if (!b.s("prob").trim().isEmpty()) {
+            modRow(box, "🎲 Probabilidad " + b.s("prob") + " (" + Math.round(pf(b.s("prob"), 1f) * 100) + "%)", "prob", b, ref);
         }
-        v.addView(label("Tocar (sobre el nodo de este script)"));
-        final String[] tl = {"(ninguno)", "Mantener pulsado", "Pasar dedo"};
-        final Spinner st = spinner(tl);
-        st.setSelection(b.s("touch").equals("hold") ? 1 : b.s("touch").equals("swipe") ? 2 : 0);
-        v.addView(st);
-        ScrollView sv = new ScrollView(this);
-        sv.addView(v);
-        new AlertDialog.Builder(this).setTitle("Propiedades del " + specOf(b.t)[1]).setView(sv)
-                .setPositiveButton("Aceptar", (d, w) -> {
-                    String ps = ep.getText().toString().trim();
-                    if (ps.isEmpty()) {
-                        b.f.remove("prob");
-                    } else {
-                        b.f.put("prob", fmt1(Math.max(0f, Math.min(1f, pf(ps, 1f)))));
-                    }
-                    if (timed) {
-                        float ts = pf(et.getText().toString(), 0);
-                        if (ts <= 0) b.f.remove("tsec");
-                        else b.f.put("tsec", fmt1(ts));
-                    }
-                    int p = st.getSelectedItemPosition();
-                    if (p == 0) b.f.remove("touch");
-                    else b.f.put("touch", p == 1 ? "hold" : "swipe");
-                }).setNegativeButton("Cancelar", null).show();
+        if (!b.s("touch").isEmpty()) modRow(box, "👆 " + touchText(b.s("touch")), "touch", b, ref);
+        if (box.getChildCount() == 0) box.addView(label("Ninguno. Se agregan en Lógica y condiciones."));
+    }
+
+    void modRow(LinearLayout box, String text, final String key, final Game.Blk b, final Runnable ref) {
+        LinearLayout r = new LinearLayout(this);
+        r.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(15);
+        r.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        r.addView(btn("✕", x -> {
+            b.f.remove(key);
+            ref.run();
+        }));
+        box.addView(r);
     }
 }
