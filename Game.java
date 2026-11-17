@@ -75,7 +75,8 @@ public class Game {
         public HashMap<String, String> f = new HashMap<String, String>();
         public ArrayList<Blk> body = new ArrayList<Blk>();
         public ArrayList<Blk> els = new ArrayList<Blk>();
-        String last;
+        String last, ck, cta;
+        ArrayList<String> ctk;
         float acc;
         Task task;
 
@@ -1217,6 +1218,12 @@ public class Game {
         if (d > 0) {
             String nn = s.substring(0, d), rest = s.substring(d + 1);
             String[] ev = enums.get(nn);
+            Object ov = getVar(nn, self);
+            if (ov instanceof EnumVal) {
+                if (rest.equals("indice") || rest.equals("índice")) return Long.valueOf(((EnumVal) ov).idx);
+                if (rest.equals("nombre")) return ((EnumVal) ov).name;
+            }
+            if (ev != null && rest.equals("cantidad")) return Long.valueOf(ev.length);
             if (ev != null) {
                 for (int i = 0; i < ev.length; i++) if (ev[i].equals(rest)) return new EnumVal(nn, rest, i);
             }
@@ -1252,15 +1259,20 @@ public class Game {
     // Condiciones (primera + las extra unidas con Y) y "tocar"; sin probabilidad
     boolean condCore(Blk b, Node self) {
         boolean res = true;
-        if (!(b.s("l").trim().isEmpty() && b.s("r").trim().isEmpty() && hasExtra(b))) {
-            res = cond1(b.s("l"), b.s("op"), b.s("r"), b.b("not"), self);
-        }
-        int nc = (int) pf0(b.s("nc"), 0);
-        for (int i = 1; i <= nc && res; i++) {
-            String k = "c" + i + "_";
-            String l = b.s(k + "l"), r = b.s(k + "r");
-            if (l.trim().isEmpty() && r.trim().isEmpty()) continue;
-            res = cond1(l, b.s(k + "op"), r, b.b(k + "n"), self);
+        if (b.f.containsKey("expr")) {
+            String ex = b.s("expr");
+            res = ex.trim().isEmpty() ? hasExtra(b) : evalExpr(b, self);
+        } else {
+            if (!(b.s("l").trim().isEmpty() && b.s("r").trim().isEmpty() && hasExtra(b))) {
+                res = cond1(b.s("l"), b.s("op"), b.s("r"), b.b("not"), self);
+            }
+            int nc = (int) pf0(b.s("nc"), 0);
+            for (int i = 1; i <= nc && res; i++) {
+                String k = "c" + i + "_";
+                String l = b.s(k + "l"), r = b.s(k + "r");
+                if (l.trim().isEmpty() && r.trim().isEmpty()) continue;
+                res = cond1(l, b.s(k + "op"), r, b.b(k + "n"), self);
+            }
         }
         String tc = b.s("touch");
         if (res && tc.equals("hold")) res = self != null && self.pressed;
@@ -1291,9 +1303,12 @@ public class Game {
 
     // 0 = falso, 1 = verdadero, 2 = esperando a que pase el tiempo
     int condState(Task t, Blk b) {
-        float ts = pf0(b.s("tsec"), 0);
+        float ts = tsecOf(b, t.self);
         if (ts <= 0) return cond(b, t.self) ? 1 : 0;
-        if (!condCore(b, t.self)) {
+        probLive = false;
+        boolean ok = condCore(b, t.self);
+        probLive = true;
+        if (!ok) {
             t.tb = null;
             return 0;
         }
@@ -1303,9 +1318,193 @@ public class Game {
         }
         if (t.tt >= ts) {
             t.tb = null;
-            return probPass(b) ? 1 : 0;
+            return condCore(b, t.self) && probPass(b) ? 1 : 0;
         }
         return 2;
+    }
+
+    // ---- Condición escrita en un solo campo: y / o / no, paréntesis y = != < > <= >=
+    ArrayList<String> ct;
+    int ci;
+    Node cself;
+    boolean probLive = true;
+    final ArrayList<Object[]> layerOps = new ArrayList<Object[]>();
+
+    static ArrayList<String> tokens(String s) {
+        ArrayList<String> r = new ArrayList<String>();
+        int i = 0, n = s.length();
+        while (i < n) {
+            char c = s.charAt(i);
+            if (Character.isWhitespace(c)) {
+                i++;
+            } else if (c == '"') {
+                int j = s.indexOf('"', i + 1);
+                if (j < 0) j = n - 1;
+                r.add(s.substring(i, j + 1));
+                i = j + 1;
+            } else if ("=!<>&|()".indexOf(c) >= 0) {
+                int j = i + 1;
+                if (j < n && " == != <= >= && || ".contains(" " + c + s.charAt(j) + " ")) j++;
+                r.add(s.substring(i, j));
+                i = j;
+            } else {
+                int j = i;
+                while (j < n && !Character.isWhitespace(s.charAt(j)) && "=!<>&|()\"".indexOf(s.charAt(j)) < 0) j++;
+                r.add(s.substring(i, j));
+                i = j;
+            }
+        }
+        return r;
+    }
+
+    String pk() {
+        return ci < ct.size() ? ct.get(ci) : null;
+    }
+
+    static boolean isOr(String t) {
+        return "o".equals(t) || "or".equals(t) || "||".equals(t);
+    }
+
+    static boolean isAnd(String t) {
+        return "y".equals(t) || "and".equals(t) || "&&".equals(t);
+    }
+
+    static boolean isCmp(String t) {
+        return "=".equals(t) || "==".equals(t) || "!=".equals(t) || "<".equals(t) || ">".equals(t)
+                || "<=".equals(t) || ">=".equals(t);
+    }
+
+    ArrayList<String> toks(Blk b) {
+        String ex = b.s("expr");
+        if (b.ctk == null || !ex.equals(b.ck)) {
+            b.ck = ex;
+            b.ctk = tokens(ex);
+            b.cta = null;
+            for (int i = 0; i + 2 < b.ctk.size(); i++) {
+                if (b.ctk.get(i).equals("por") && b.ctk.get(i + 1).equals("(")) {
+                    b.cta = b.ctk.get(i + 2);
+                    break;
+                }
+            }
+        }
+        return b.ctk;
+    }
+
+    float argF(String a) {
+        Object o = val(a, cself);
+        return o instanceof Number ? ((Number) o).floatValue() : pf0(String.valueOf(o), 0f);
+    }
+
+    // Segundos que debe mantenerse la condición: por(X) escrito en la condición (o el valor antiguo)
+    float tsecOf(Blk b, Node self) {
+        cself = self;
+        if (b.f.containsKey("expr")) {
+            toks(b);
+            if (b.cta != null) return argF(b.cta);
+        }
+        return pf0(b.s("tsec"), 0);
+    }
+
+    boolean evalExpr(Blk b, Node self) {
+        try {
+            ct = toks(b);
+            ci = 0;
+            cself = self;
+            boolean r = pOr();
+            return ci >= ct.size() && r;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    boolean pOr() {
+        boolean r = pAnd();
+        while (isOr(pk())) {
+            ci++;
+            boolean q = pAnd();
+            r = r || q;
+        }
+        return r;
+    }
+
+    boolean pAnd() {
+        boolean r = pNot();
+        while (isAnd(pk())) {
+            ci++;
+            boolean q = pNot();
+            r = r && q;
+        }
+        return r;
+    }
+
+    boolean pNot() {
+        String t = pk();
+        if ("!".equals(t) || "not".equals(t) || "no".equals(t)) {
+            String nx = ci + 1 < ct.size() ? ct.get(ci + 1) : null;
+            if (t.equals("!") || (nx != null && !isCmp(nx) && !isAnd(nx) && !isOr(nx) && !nx.equals(")"))) {
+                ci++;
+                return !pNot();
+            }
+        }
+        return pCmp();
+    }
+
+    boolean pCmp() {
+        String t = pk();
+        if (t == null) throw new IllegalStateException();
+        ci++;
+        if (t.equals("(")) {
+            boolean r = pOr();
+            if (!")".equals(pk())) throw new IllegalStateException();
+            ci++;
+            return r;
+        }
+        if ("(".equals(pk())) {
+            ci++;
+            String a = pk();
+            if (a == null || a.equals(")")) throw new IllegalStateException();
+            ci++;
+            if (!")".equals(pk())) throw new IllegalStateException();
+            ci++;
+            if (t.equals("por")) return true;
+            if (t.equals("prob")) return !probLive || rnd.nextFloat() < argF(a);
+            throw new IllegalStateException();
+        }
+        if (!isCmp(pk()) && getVar(t, cself) == null) {
+            if (t.equals("pulsado")) return cself != null && cself.pressed;
+            if (t.equals("dedo_dentro")) return fingerIn(cself);
+            if (t.equals("dedo_fuera")) return !fingerIn(cself);
+        }
+        Object l = val(t, cself);
+        if (isCmp(pk())) {
+            String op = ct.get(ci++);
+            String rt = pk();
+            if (rt == null) throw new IllegalStateException();
+            ci++;
+            return cmp(l, op, val(rt, cself));
+        }
+        return truthy(l);
+    }
+
+    static boolean cmp(Object l, String op, Object r) {
+        if (l instanceof EnumVal && r instanceof EnumVal && ((EnumVal) l).type.equals(((EnumVal) r).type)) {
+            l = Long.valueOf(((EnumVal) l).idx);
+            r = Long.valueOf(((EnumVal) r).idx);
+        }
+        if (l instanceof Number && r instanceof Number) {
+            double x = ((Number) l).doubleValue(), y = ((Number) r).doubleValue();
+            switch (op) {
+                case "<": return x < y;
+                case ">": return x > y;
+                case "<=": return x <= y;
+                case ">=": return x >= y;
+                case "!=": return x != y;
+                default: return x == y;
+            }
+        }
+        boolean eq = String.valueOf(l).equals(String.valueOf(r));
+        if (op.equals("!=")) return !eq;
+        return (op.equals("=") || op.equals("==") || op.isEmpty()) && eq;
     }
 
     boolean cond1(String ls, String op, String rs, boolean not, Node self) {
@@ -1314,23 +1513,7 @@ public class Game {
         if (rs.trim().isEmpty()) {
             res = truthy(l);
         } else {
-            Object r = val(rs, self);
-            if (l instanceof Number && r instanceof Number) {
-                double x = num(l), y = num(r);
-                switch (op) {
-                    case "<": res = x < y; break;
-                    case ">": res = x > y; break;
-                    case "<=": res = x <= y; break;
-                    case ">=": res = x >= y; break;
-                    case "!=": res = x != y; break;
-                    default: res = x == y;
-                }
-            } else {
-                boolean eq = String.valueOf(l).equals(String.valueOf(r));
-                if (op.equals("!=")) res = !eq;
-                else if (op.equals("=") || op.isEmpty()) res = eq;
-                else res = false;
-            }
+            res = cmp(l, op, val(rs, self));
         }
         return not ? !res : res;
     }
@@ -1399,13 +1582,29 @@ public class Game {
             case "enumnext": {
                 String name = b.s("name").trim();
                 Object cur = getVar(name, self);
+                String et = b.s("enum").trim();
+                String[] ev0 = enums.get(et);
+                if (!(cur instanceof EnumVal) && ev0 != null && ev0.length > 0) cur = new EnumVal(et, ev0[0], 0);
                 if (cur instanceof EnumVal) {
                     EnumVal e = (EnumVal) cur;
                     String[] vals = enums.get(e.type);
                     if (vals != null && vals.length > 0) {
-                        int i = e.idx + (b.s("dir").equals("anterior") ? -1 : 1);
-                        if (b.b("wrap")) i = (i % vals.length + vals.length) % vals.length;
-                        else i = Math.max(0, Math.min(vals.length - 1, i));
+                        String dr = b.s("dir");
+                        int i;
+                        if (dr.equals("primero")) {
+                            i = 0;
+                        } else if (dr.equals("último")) {
+                            i = vals.length - 1;
+                        } else if (dr.equals("aleatorio")) {
+                            i = rnd.nextInt(vals.length);
+                        } else if (dr.equals("ir a")) {
+                            Object tv = castEnum(e.type, val(b.s("to"), self));
+                            i = tv instanceof EnumVal ? ((EnumVal) tv).idx : e.idx;
+                        } else {
+                            i = e.idx + (dr.equals("anterior") ? -1 : 1);
+                            if (b.b("wrap")) i = (i % vals.length + vals.length) % vals.length;
+                            else i = Math.max(0, Math.min(vals.length - 1, i));
+                        }
                         putVar(name, new EnumVal(e.type, vals[i], i), self);
                     }
                 }
@@ -1490,6 +1689,9 @@ public class Game {
             case "mod":
                 t.alpha = clamp01((float) num(val(b.s("val"), self)));
                 if (b.f.containsKey("touch")) t.touchAlways = b.b("touch");
+                break;
+            case "layer":
+                layerOps.add(new Object[]{t, b.s("mode")});
                 break;
             case "vis":
                 t.visible = truthy(val(b.s("val"), self));
@@ -1621,6 +1823,20 @@ public class Game {
                     if (!f.chain) push(t, b.body, 0, 0, null);
                     f.chain = true;
                     break;
+                case "match": {
+                    Object mv = val(b.s("val"), t.self);
+                    ArrayList<Blk> pick = null, def = null;
+                    for (Blk c : b.body) {
+                        if (c.t.equals("case")) {
+                            if (pick == null && caseHit(mv, c.s("val"), t.self)) pick = c.body;
+                        } else if (c.t.equals("default")) {
+                            def = c.body;
+                        }
+                    }
+                    if (pick == null) pick = def;
+                    if (pick != null) push(t, pick, 0, 0, null);
+                    break;
+                }
                 case "wait":
                     t.wait = Math.max(0.0001f, (float) num(val(b.s("secs"), t.self)));
                     break;
@@ -1648,6 +1864,30 @@ public class Game {
             }
         }
         if (!t.done && t.wait <= 0f && budget <= 0) t.wait = 0.0001f;
+    }
+
+    boolean caseHit(Object v, String list, Node self) {
+        for (String p : list.split(",")) {
+            p = p.trim();
+            if (!p.isEmpty() && cmp(v, "=", val(p, self))) return true;
+        }
+        return false;
+    }
+
+    // Capas: subir / bajar entre hermanos (se dibuja después = más arriba)
+    public void layer(Node n, String mode) {
+        boolean up = mode.equals("subir") || mode.equals("al frente");
+        int i = nodes.indexOf(n), pos = i, st = up ? 1 : -1;
+        if (i < 0) return;
+        for (int j = i + st; j >= 0 && j < nodes.size(); j += st) {
+            if (nodes.get(j).parent != n.parent) continue;
+            pos = j;
+            if (!mode.startsWith("al ")) break;
+        }
+        if (pos == i) return;
+        nodes.remove(i);
+        nodes.add(pos, n);
+        rebuild();
     }
 
     void pump() {
@@ -1688,6 +1928,7 @@ public class Game {
         msgs.clear();
         tws.clear();
         holds.clear();
+        layerOps.clear();
         tasks.clear();
         cache.clear();
         pendingScene = null;
@@ -1791,6 +2032,10 @@ public class Game {
     public void update(float dt) {
         animate(dt);
         if (edit) return;
+        if (!layerOps.isEmpty()) {
+            for (Object[] o : layerOps) layer((Node) o[0], (String) o[1]);
+            layerOps.clear();
+        }
         if (hasVideo) {
             for (int a = 0; a < nodes.size(); a++) {
                 Node n = nodes.get(a);
