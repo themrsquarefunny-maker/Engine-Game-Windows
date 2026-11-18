@@ -82,9 +82,13 @@ public class EditorActivity extends Activity {
         {"every", "Cada X segundos", "E", "secs:Segundos:N"},
         {"change", "Al cambiar una propiedad", "E", "node:Nodo:G", "prop:Propiedad:O:visible|modulate|x|y|w|h|text"},
         {"orient", "Al cambiar de orientación", "E"},
-        {"send", "Transmitir mensaje", "S", "msg:Mensaje:M"},
-        {"if", "Si", "S", "expr:Condición:T"},
-        {"elif", "Sino, Si", "S", "expr:Condición:T"},
+        {"func", "Función (evento)", "E", "name:Nombre de la función:T", "params:Parámetros (separados por coma):T"},
+        {"send", "Transmitir mensaje", "S", "msg:Mensaje:M", "scope:Alcance:O:escena|nodo|jerarquía|global"},
+        {"call", "Invocar función", "S", "name:Función:F", "args:Valores (separados por coma):T",
+            "par:Ejecutar en paralelo (sin esperar a que termine):B", "ret:Guardar lo que devuelva en la variable:Q"},
+        {"return", "Devolver / salir de la función", "S", "val:Valor a devolver (opcional):V"},
+        {"if", "Si", "S", "tm:Contar el tiempo de por(X):O:esperar|reloj propio", "expr:Condición:T"},
+        {"elif", "Sino, Si", "S", "tm:Contar el tiempo de por(X):O:esperar|reloj propio", "expr:Condición:T"},
         {"else", "Sino", "S"},
         {"while", "Repetir mientras", "S", "expr:Condición:T"},
         {"repeat", "Repetir (veces)", "S", "n:Veces:V"},
@@ -94,7 +98,7 @@ public class EditorActivity extends Activity {
         {"breakloop", "Romper loop (animación o video)", "S", "node:Nodo (AnimatedSprite o Video):G"},
         {"wait", "Esperar (segundos)", "S", "secs:Segundos:N"},
         {"var", "Variable (crear)", "S", "name:Nombre:R", "vtype:Tipo:Y",
-            "scope:Alcance:O:global|escena|nodo", "val:Valor inicial:V"},
+            "scope:Alcance:O:global|escena|nodo|local", "val:Valor inicial:V"},
         {"setvar", "Cambiar valor de variable", "S", "name:Variable:Q", "val:Nuevo valor:V"},
         {"math", "Operar variable", "S", "name:Variable:Q", "op:Operación:O:+|-|*|/", "val:Valor:V"},
         {"enum", "Enum (definir)", "S", "name:Nombre del enum:T", "values:Valores:E"},
@@ -121,6 +125,14 @@ public class EditorActivity extends Activity {
                 "touch:Permitir tocar aunque la transparencia sea máxima (alpha 0):B"},
         {"vis", "Visibilidad", "S", "node:Nodo:G", "val:Visible:O:true|false"},
         {"pos", "Mover a (vacío = no cambia)", "S", "node:Nodo:G", "x:X:V", "y:Y:V"},
+        {"advance", "Avanzar píxeles", "S", "node:Nodo:G", "dir:Dirección:O:derecha|izquierda|arriba|abajo|ángulo",
+            "ang:Ángulo en grados (solo 'ángulo': 0 = derecha, 90 = abajo):V", "dist:Píxeles a avanzar:V",
+            "secs:Segundos (0 = al instante):V", "edge:No salir de los bordes:B"},
+        {"speed", "Velocidad (inicial → final)", "S", "node:Nodo:G", "dir:Dirección:O:derecha|izquierda|arriba|abajo|ángulo",
+            "ang:Ángulo en grados (solo 'ángulo'):V", "v0:Velocidad inicial (píxeles por segundo):V",
+            "v1:Velocidad final (píxeles por segundo):V", "ramp:Segundos para pasar de la inicial a la final:V",
+            "secs:Duración máxima en segundos (0 = mientras se cumpla la condición):V",
+            "edge:No salir de los bordes:B", "expr:Mientras:T"},
         {"text", "Cambiar texto", "S", "node:Nodo (Button):G", "val:Texto:V"},
         {"tween", "Cambio progresivo", "S", "node:Nodo:G", "what:Qué cambia:O:modulate|mover|tamaño",
             "x:Valor (modulate) o X:V", "y:Y (mover o tamaño):V", "secs:Segundos:N",
@@ -1005,6 +1017,40 @@ public class EditorActivity extends Activity {
         final EditText ev = new EditText(this);
         ev.setText("1.0");
         v.addView(ev);
+        v.addView(label("Paquete: com.[marca].[juego]  (vacío = automático)"));
+        final android.content.SharedPreferences sp0 = getSharedPreferences("exp", 0);
+        LinearLayout pr = new LinearLayout(this);
+        final EditText eb = new EditText(this), ej = new EditText(this);
+        eb.setHint("marca");
+        ej.setHint("juego");
+        eb.setInputType(TXT);
+        ej.setInputType(TXT);
+        eb.setText(sp0.getString("marca", ""));
+        ej.setText(sp0.getString("juego", ""));
+        pr.addView(eb, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        pr.addView(ej, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        v.addView(pr);
+        final TextView pkv = new TextView(this);
+        v.addView(pkv);
+        final Runnable upd = () -> {
+            String k = makePkg(eb.getText().toString(), ej.getText().toString(), en.getText().toString());
+            pkv.setText("→ " + (k.isEmpty() ? "automático" : k));
+        };
+        TextWatcher tw = new TextWatcher() {
+            public void beforeTextChanged(CharSequence q, int a1, int c, int d) {
+            }
+
+            public void onTextChanged(CharSequence q, int a1, int c, int d) {
+            }
+
+            public void afterTextChanged(Editable q) {
+                upd.run();
+            }
+        };
+        eb.addTextChangedListener(tw);
+        ej.addTextChangedListener(tw);
+        en.addTextChangedListener(tw);
+        upd.run();
         v.addView(label("Ícono de la app"));
         tIconInfo = new TextView(this);
         tIconInfo.setText(iconFile.exists() ? "Ícono personalizado ✔" : "Ícono por defecto");
@@ -1032,11 +1078,31 @@ public class EditorActivity extends Activity {
                     String vr = ev.getText().toString().trim();
                     if (nm.isEmpty()) nm = "Juego";
                     if (vr.isEmpty()) vr = "1.0";
-                    doExport(nm, vr, si.getSelectedItemPosition());
+                    String pk = makePkg(eb.getText().toString(), ej.getText().toString(), nm);
+                    sp0.edit().putString("marca", eb.getText().toString().trim())
+                            .putString("juego", ej.getText().toString().trim()).apply();
+                    doExport(nm, vr, si.getSelectedItemPosition(), pk);
                 }).setNegativeButton("Cancelar", null).show();
     }
 
-    void doExport(final String name, final String ver, final int imgMode) {
+    static String seg(String t) {
+        t = java.text.Normalizer.normalize(t, java.text.Normalizer.Form.NFD).replaceAll("\\p{M}", "")
+                .toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_]", "");
+        if (!t.isEmpty() && !Character.isLetter(t.charAt(0))) t = "a" + t;
+        return t.length() > 30 ? t.substring(0, 30) : t;
+    }
+
+    // com.marca.juego (vacío = automático)
+    static String makePkg(String marca, String juego, String app) {
+        String m = seg(marca), j = seg(juego);
+        if (m.isEmpty() && j.isEmpty()) return "";
+        if (m.isEmpty()) m = "app";
+        if (j.isEmpty()) j = seg(app);
+        if (j.isEmpty()) j = "juego";
+        return "com." + m + "." + j;
+    }
+
+    void doExport(final String name, final String ver, final int imgMode, final String pkg) {
         exportName = name;
         final String json;
         final byte[] icon;
@@ -1054,7 +1120,7 @@ public class EditorActivity extends Activity {
         new Thread(() -> {
             try {
                 File out = new File(getCacheDir(), "export.apk");
-                Exporter.build(this, json, adir, used, sizes, noDown, imgMode, icon, name, ver, out);
+                Exporter.build(this, json, adir, used, sizes, noDown, imgMode, icon, name, ver, pkg, out);
                 exported = out;
                 runOnUiThread(() -> {
                     Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
@@ -1083,8 +1149,24 @@ public class EditorActivity extends Activity {
     TreeSet<String> variableNames() {
         TreeSet<String> v = new TreeSet<String>();
         TreeSet<String> m = new TreeSet<String>();
-        for (Game.Node n : g.allNodes()) collectVars(n.script, v, m);
+        for (Game.Node n : g.allNodes()) {
+            collectVars(n.script, v, m);
+            for (Game.Blk e : n.script) {
+                if (!e.t.equals("func")) continue;
+                for (String q : e.s("params").split(",")) if (!q.trim().isEmpty()) v.add(q.trim());
+            }
+        }
         return v;
+    }
+
+    TreeSet<String> funcNames() {
+        TreeSet<String> r = new TreeSet<String>();
+        for (Game.Node n : g.allNodes()) {
+            for (Game.Blk e : n.script) {
+                if (e.t.equals("func") && !e.s("name").trim().isEmpty()) r.add(e.s("name").trim());
+            }
+        }
+        return r;
     }
 
     TreeSet<String> messageNames() {
@@ -1220,6 +1302,12 @@ public class EditorActivity extends Activity {
         }
         if (kind.equals("M")) {
             msgChooser(e);
+            return;
+        }
+        if (kind.equals("F")) {
+            TreeSet<String> fn = funcNames();
+            if (fn.isEmpty()) toast("Aún no hay funciones: crea una con el evento Función");
+            else listChooser("Elegir función", fn, null, e);
             return;
         }
         final String[] cats = {"Una variable", "Propiedad de un nodo (x, y, visible…)", "Valor de un enum",
@@ -1616,7 +1704,7 @@ public class EditorActivity extends Activity {
         final ArrayList<String> keys = new ArrayList<String>();
         final ArrayList<String> kinds = new ArrayList<String>();
         final ArrayList<String[]> holders = new ArrayList<String[]>();
-        final boolean isCond = b.t.equals("if") || b.t.equals("elif") || b.t.equals("while");
+        final boolean isCond = b.t.equals("if") || b.t.equals("elif") || b.t.equals("while") || b.t.equals("speed");
         for (int i = 3; i < sp.length; i++) {
             String[] p = sp[i].split(":", 4);
             final String key = p[0], lab = p[1], kind = p[2];
@@ -1631,7 +1719,7 @@ public class EditorActivity extends Activity {
                 w = listEditor(holder, kind.equals("L"));
                 v.addView(w);
             } else if (kind.equals("T") || kind.equals("N") || kind.equals("V") || kind.equals("R")
-                    || kind.equals("Q") || kind.equals("M")) {
+                    || kind.equals("Q") || kind.equals("M") || kind.equals("F")) {
                 final EditText e = new EditText(this);
                 e.setInputType(TXT);
                 e.setText(cur);
@@ -1694,7 +1782,8 @@ public class EditorActivity extends Activity {
         final HashMap<String, String> backup = new HashMap<String, String>(b.f);
         if (isCond) {
             migrate(b);
-            v.addView(label("Condición (ej: como = 2 y restante > 0)"));
+            v.addView(label(b.t.equals("speed") ? "Mientras se cumpla (ej: pulsado; vacío = solo el tiempo)"
+                    : "Condición (ej: como = 2 y restante > 0)"));
             final EditText ex = new EditText(this);
             ex.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                     | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);

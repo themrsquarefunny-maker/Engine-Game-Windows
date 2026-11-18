@@ -21,7 +21,9 @@ import java.util.zip.ZipOutputStream;
 public class Exporter {
     // Textos de relleno que están dentro de la plantilla (PlayerManifest.xml).
     // Se reemplazan por los valores reales con la MISMA longitud.
-    static final String PKG_PH = "com.gx.placeholder00000000";
+    static final String PKG_PH = "com.gx.placeholder00000000000000000000000000000000000000000000000000000000000000";
+    // plantilla antigua (26 letras): sigue funcionando, pero con paquetes de hasta 26 letras
+    static final String PKG_OLD = "com.gx.placeholder00000000";
     static final String LABEL_PH = "LABELPLACEHOLDERXXXXXXXXXXXXXXXX";
     static final String VER_PH = "VPLACEHOLDER";
 
@@ -63,13 +65,58 @@ public class Exporter {
         return d;
     }
 
+    static boolean has(byte[] d, String s, String enc) throws Exception {
+        byte[] a = s.getBytes(enc);
+        for (int i = 0; i + a.length <= d.length; i++) {
+            int j = 0;
+            while (j < a.length && d[i + j] == a[j]) j++;
+            if (j == a.length) return true;
+        }
+        return false;
+    }
+
+    // El paquete puede ser más corto que el texto de relleno: se acorta la cadena dentro del manifiesto
+    // (longitud + texto + fin de cadena) y el resto queda en ceros; nada más cambia de lugar.
+    static byte[] setPkg(byte[] d, String pkg) throws Exception {
+        String ph = has(d, PKG_PH, "UTF-8") || has(d, PKG_PH, "UTF-16LE") ? PKG_PH : PKG_OLD;
+        if (pkg.length() > ph.length()) throw new Exception("Paquete demasiado largo (máximo " + ph.length() + " letras)");
+        if (pkg.length() == ph.length()) {
+            d = rep(d, ph, pkg, "UTF-8");
+            return rep(d, ph, pkg, "UTF-16LE");
+        }
+        d = shrink(d, ph, pkg, false);
+        return shrink(d, ph, pkg, true);
+    }
+
+    static byte[] shrink(byte[] d, String ph, String pkg, boolean u16) throws Exception {
+        String enc = u16 ? "UTF-16LE" : "UTF-8";
+        byte[] a = ph.getBytes(enc), b = pkg.getBytes(enc);
+        for (int i = 2; i + a.length <= d.length; i++) {
+            int j = 0;
+            while (j < a.length && d[i + j] == a[j]) j++;
+            if (j < a.length) continue;
+            if (u16) {
+                if (((d[i - 2] & 0xff) | ((d[i - 1] & 0xff) << 8)) != ph.length()) throw new Exception("Manifiesto inesperado");
+                d[i - 2] = (byte) pkg.length();
+                d[i - 1] = 0;
+            } else {
+                if ((d[i - 2] & 0xff) != ph.length() || (d[i - 1] & 0xff) != ph.length()) throw new Exception("Manifiesto inesperado");
+                d[i - 2] = (byte) pkg.length();
+                d[i - 1] = (byte) pkg.length();
+            }
+            System.arraycopy(b, 0, d, i, b.length);
+            for (int k = i + b.length; k < i + a.length + (u16 ? 2 : 1); k++) d[k] = 0;
+            i += a.length - 1;
+        }
+        return d;
+    }
+
     static byte[] patch(byte[] d, String pkg, String label, String ver) throws Exception {
         String lab = pad(label, LABEL_PH.length());
         String vv = pad(ver, VER_PH.length());
-        d = rep(d, PKG_PH, pkg, "UTF-8");
+        d = setPkg(d, pkg);
         d = rep(d, LABEL_PH, lab, "UTF-8");
         d = rep(d, VER_PH, vv, "UTF-8");
-        d = rep(d, PKG_PH, pkg, "UTF-16LE");
         d = rep(d, LABEL_PH, lab, "UTF-16LE");
         d = rep(d, VER_PH, vv, "UTF-16LE");
         return d;
@@ -120,7 +167,7 @@ public class Exporter {
 
     public static void build(Context c, String json, File adir, Set<String> used,
                              HashMap<String, float[]> sizes, boolean noDown, int imgMode,
-                             byte[] icon, String name, String ver, File out) throws Exception {
+                             byte[] icon, String name, String ver, String pkgIn, File out) throws Exception {
         byte[] tpl;
         try (InputStream i = c.getAssets().open("template.apk")) {
             tpl = readAll(i);
@@ -128,7 +175,7 @@ public class Exporter {
         byte[] md = MessageDigest.getInstance("MD5").digest(name.getBytes("UTF-8"));
         StringBuilder hex = new StringBuilder();
         for (byte b : md) hex.append(String.format("%02x", b));
-        String pkg = "com.gx.a" + hex.substring(0, PKG_PH.length() - 8);
+        String pkg = pkgIn != null && !pkgIn.isEmpty() ? pkgIn : "com.gx.a" + hex.substring(0, PKG_OLD.length() - 8);
 
         File unsigned = new File(c.getCacheDir(), "unsigned.apk");
         if (unsigned.exists()) unsigned.delete();

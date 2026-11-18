@@ -338,8 +338,18 @@ public class Game {
     static class Frame {
         ArrayList<Blk> list;
         int idx, kind, rem;
-        boolean chain;
+        boolean chain, fn;
         Blk blk;
+        Node prev;
+        HashMap<String, Object> loc;
+        String rv = "";
+    }
+
+    // alcance: 0 escena, 1 solo el nodo, 2 nodo e hijos, 3 global
+    static class Msg {
+        String m;
+        Node from;
+        int sc;
     }
 
     static class Task {
@@ -347,8 +357,10 @@ public class Game {
         ArrayList<Frame> stack = new ArrayList<Frame>();
         float wait;
         boolean done, fresh;
-        Blk tb;
-        float tt;
+        HashMap<Blk, float[]> tm;
+        float carry;
+        boolean wk;
+        int fns;
     }
 
     static class Hold {
@@ -390,7 +402,13 @@ public class Game {
     Node cam;
     float camX, camY, camZ = 1f;
     Matrix camM = new Matrix();
-    ArrayDeque<String> msgs = new ArrayDeque<String>();
+    ArrayDeque<Msg> msgs = new ArrayDeque<Msg>();
+    ArrayList<Msg> gq = new ArrayList<Msg>();
+    float curDt;
+    double clk;
+    Task curTask;
+    HashMap<Blk, float[]> tclk = new HashMap<Blk, float[]>();
+    HashMap<String, ArrayList<Object[]>> fnMap;
     ArrayList<Tw> tws = new ArrayList<Tw>();
     ArrayList<Hold> holds = new ArrayList<Hold>();
     ArrayList<Task> tasks = new ArrayList<Task>();
@@ -1117,13 +1135,27 @@ public class Game {
         return String.valueOf(v);
     }
 
+    Frame fnFrame() {
+        Task t = curTask;
+        if (t == null || t.fns == 0) return null;
+        for (int i = t.stack.size() - 1; i >= 0; i--) if (t.stack.get(i).fn) return t.stack.get(i);
+        return null;
+    }
+
     Object getVar(String name, Node self) {
+        Frame fr = fnFrame();
+        if (fr != null && fr.loc.containsKey(name)) return fr.loc.get(name);
         if (self != null && self.vars.containsKey(name)) return self.vars.get(name);
         if (svars.containsKey(name)) return svars.get(name);
         return gvars.get(name);
     }
 
     void putVar(String name, Object v, Node self) {
+        Frame fr = fnFrame();
+        if (fr != null && fr.loc.containsKey(name)) {
+            fr.loc.put(name, v);
+            return;
+        }
         if (self != null && self.vars.containsKey(name)) self.vars.put(name, v);
         else if (svars.containsKey(name)) svars.put(name, v);
         else gvars.put(name, v);
@@ -1301,24 +1333,44 @@ public class Game {
         return condCore(b, self) && probPass(b);
     }
 
-    // 0 = falso, 1 = verdadero, 2 = esperando a que pase el tiempo
+    // 0 = falso, 1 = verdadero, 2 = esperando a que pase el tiempo.
+    // Cada Si / Sino, si lleva su propio contador: no se mezcla con esperas ni con otros Si.
     int condState(Task t, Blk b) {
         float ts = tsecOf(b, t.self);
         if (ts <= 0) return cond(b, t.self) ? 1 : 0;
         probLive = false;
         boolean ok = condCore(b, t.self);
         probLive = true;
+        if (b.s("tm").startsWith("reloj")) {
+            // reloj propio: no detiene el script; sirve en eventos que se repiten
+            if (!ok) {
+                tclk.remove(b);
+                return 0;
+            }
+            float[] c = tclk.get(b);
+            if (c == null) {
+                c = new float[]{(float) clk};
+                tclk.put(b, c);
+            }
+            if (clk - c[0] < ts) return 0;
+            tclk.remove(b);
+            return probPass(b) ? 1 : 0;
+        }
         if (!ok) {
-            t.tb = null;
+            if (t.tm != null) t.tm.remove(b);
             return 0;
         }
-        if (t.tb != b) {
-            t.tb = b;
-            t.tt = 0;
+        if (t.tm == null) t.tm = new HashMap<Blk, float[]>();
+        float[] e = t.tm.get(b);
+        if (e == null) {
+            e = new float[1];
+            t.tm.put(b, e);
+        } else {
+            e[0] += curDt;
         }
-        if (t.tt >= ts) {
-            t.tb = null;
-            return condCore(b, t.self) && probPass(b) ? 1 : 0;
+        if (e[0] >= ts) {
+            t.tm.remove(b);
+            return probPass(b) ? 1 : 0;
         }
         return 2;
     }
@@ -1539,9 +1591,15 @@ public class Game {
         Node t = tgt(b, self);
         if (b.f.containsKey("node") && t == null) return;
         switch (b.t) {
-            case "send":
-                msgs.add(b.s("msg"));
+            case "send": {
+                Msg m = new Msg();
+                m.m = b.s("msg");
+                m.from = self;
+                String sc = b.s("scope");
+                m.sc = sc.equals("nodo") ? 1 : sc.startsWith("jer") ? 2 : sc.equals("global") ? 3 : 0;
+                msgs.add(m);
                 break;
+            }
             case "var": {
                 String name = b.s("name").trim();
                 if (name.isEmpty()) break;
@@ -1552,7 +1610,11 @@ public class Game {
                     if (st != null) v = castType(type, st);
                 }
                 String sc = b.s("scope");
-                if (sc.equals("nodo")) self.vars.put(name, v);
+                if (sc.equals("local")) {
+                    Frame fr = fnFrame();
+                    if (fr != null) fr.loc.put(name, v);
+                    else svars.put(name, v);
+                } else if (sc.equals("nodo")) self.vars.put(name, v);
                 else if (sc.equals("escena")) svars.put(name, v);
                 else gvars.put(name, v);
                 break;
@@ -1756,6 +1818,146 @@ public class Game {
     }
 
     void step(Task t) {
+        Task pv = curTask;
+        curTask = t;
+        try {
+            step0(t);
+        } finally {
+            curTask = pv;
+        }
+    }
+
+    Frame pop(Task t) {
+        Frame f = t.stack.remove(t.stack.size() - 1);
+        if (f.fn) {
+            t.self = f.prev;
+            t.fns--;
+        }
+        return f;
+    }
+
+    Frame pushFn(Task t, Blk fb, HashMap<String, Object> loc, Node prev, String rv) {
+        push(t, fb.body, 0, 0, null);
+        Frame f = t.stack.get(t.stack.size() - 1);
+        f.fn = true;
+        f.loc = loc;
+        f.prev = prev;
+        f.rv = rv;
+        t.fns++;
+        return f;
+    }
+
+    Object[] findFn(String name, Node self) {
+        if (name.isEmpty()) return null;
+        if (fnMap == null) {
+            fnMap = new HashMap<String, ArrayList<Object[]>>();
+            for (Node n : nodes) {
+                for (Blk e : n.script) {
+                    String k = e.t.equals("func") ? e.s("name").trim() : "";
+                    if (k.isEmpty()) continue;
+                    ArrayList<Object[]> l = fnMap.get(k);
+                    if (l == null) fnMap.put(k, l = new ArrayList<Object[]>());
+                    l.add(new Object[]{e, n});
+                }
+            }
+        }
+        ArrayList<Object[]> l = fnMap.get(name);
+        if (l == null) return null;
+        for (Object[] o : l) if (o[1] == self) return o;
+        return l.get(0);
+    }
+
+    // separa por comas, sin cortar dentro de comillas o paréntesis
+    static ArrayList<String> splitArgs(String s) {
+        ArrayList<String> r = new ArrayList<String>();
+        int dp = 0, st = 0;
+        boolean q = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '"') q = !q;
+            else if (!q && c == '(') dp++;
+            else if (!q && c == ')') dp--;
+            else if (!q && dp == 0 && c == ',') {
+                r.add(s.substring(st, i).trim());
+                st = i + 1;
+            }
+        }
+        r.add(s.substring(st).trim());
+        return r;
+    }
+
+    HashMap<String, Object> bind(Blk fb, Blk call, Node caller) {
+        HashMap<String, Object> loc = new HashMap<String, Object>();
+        ArrayList<String> ps = splitArgs(fb.s("params")), as = splitArgs(call.s("args"));
+        for (int i = 0; i < ps.size(); i++) {
+            String p = ps.get(i);
+            if (p.isEmpty()) continue;
+            loc.put(p, i < as.size() && !as.get(i).isEmpty() ? val(as.get(i), caller) : Long.valueOf(0));
+        }
+        return loc;
+    }
+
+    // Avanzar píxeles / Velocidad: 1 = terminó, 2 = sigue (se vuelve a llamar en el siguiente fotograma)
+    int moveStep(Task t, Blk b) {
+        Node n = tgt(b, t.self);
+        if (n == null) return 1;
+        boolean sp = b.t.equals("speed");
+        float secs = (float) num(val(b.s("secs"), t.self));
+        if (!sp && secs <= 0) {
+            move(n, b, (float) num(val(b.s("dist"), t.self)), t.self);
+            return 1;
+        }
+        String cx = sp ? b.s("expr").trim() : "";
+        if (!cx.isEmpty() && !evalExpr(b, t.self)) {
+            if (t.tm != null) t.tm.remove(b);
+            return 1;
+        }
+        if (t.tm == null) t.tm = new HashMap<Blk, float[]>();
+        float[] e = t.tm.get(b);
+        if (e == null) t.tm.put(b, e = new float[1]);
+        float el0 = e[0];
+        e[0] += curDt;
+        boolean end;
+        if (!sp) {
+            float p0 = Math.min(1f, el0 / secs), p1 = Math.min(1f, e[0] / secs);
+            move(n, b, (float) num(val(b.s("dist"), t.self)) * (p1 - p0), t.self);
+            end = p1 >= 1f;
+        } else {
+            float v0 = (float) num(val(b.s("v0"), t.self)), v1 = (float) num(val(b.s("v1"), t.self));
+            float ramp = (float) num(val(b.s("ramp"), t.self));
+            float va = ramp > 0 ? v0 + (v1 - v0) * Math.min(1f, el0 / ramp) : v1;
+            float vb = ramp > 0 ? v0 + (v1 - v0) * Math.min(1f, e[0] / ramp) : v1;
+            move(n, b, (va + vb) / 2f * curDt, t.self);
+            end = secs > 0 ? e[0] >= secs : (cx.isEmpty() && e[0] >= Math.max(ramp, 1f));
+        }
+        if (end) t.tm.remove(b);
+        return end ? 1 : 2;
+    }
+
+    void move(Node n, Blk b, float d, Node self) {
+        float ux = 1f, uy = 0f;
+        switch (b.s("dir")) {
+            case "izquierda": ux = -1f; break;
+            case "arriba": ux = 0f; uy = -1f; break;
+            case "abajo": ux = 0f; uy = 1f; break;
+            case "ángulo": {
+                double a = Math.toRadians(num(val(b.s("ang"), self)));
+                ux = (float) Math.cos(a);
+                uy = (float) Math.sin(a);
+                break;
+            }
+            default: break;
+        }
+        n.x += ux * d;
+        n.y += uy * d;
+        if (b.b("edge")) {
+            float mw = n.par != null ? n.par.w : vw, mh = n.par != null ? n.par.h : vh;
+            n.x = Math.max(0f, Math.min(n.x, mw - n.w));
+            n.y = Math.max(0f, Math.min(n.y, mh - n.h));
+        }
+    }
+
+    void step0(Task t) {
         int budget = 3000;
         while (!t.done && t.wait <= 0f && budget-- > 0) {
             if (t.stack.isEmpty()) {
@@ -1777,7 +1979,7 @@ public class Game {
                     f.idx = 0;
                     f.chain = false;
                 } else {
-                    t.stack.remove(t.stack.size() - 1);
+                    pop(t);
                 }
                 continue;
             }
@@ -1810,13 +2012,13 @@ public class Game {
                     break;
                 case "breakrep": {
                     int k = -1;
-                    for (int q = t.stack.size() - 1; q >= 0; q--) {
+                    for (int q = t.stack.size() - 1; q >= 0 && !t.stack.get(q).fn; q--) {
                         if (t.stack.get(q).kind == 1) {
                             k = q;
                             break;
                         }
                     }
-                    if (k >= 0) while (t.stack.size() > k) t.stack.remove(t.stack.size() - 1);
+                    if (k >= 0) while (t.stack.size() > k) pop(t);
                     break;
                 }
                 case "else":
@@ -1837,8 +2039,48 @@ public class Game {
                     if (pick != null) push(t, pick, 0, 0, null);
                     break;
                 }
+                case "call": {
+                    Object[] fd = findFn(b.s("name").trim(), t.self);
+                    if (fd == null || t.stack.size() > 40) break;
+                    Blk fb = (Blk) fd[0];
+                    Node fnode = (Node) fd[1];
+                    HashMap<String, Object> loc = bind(fb, b, t.self);
+                    if (b.b("par")) {
+                        Task nt = new Task();
+                        nt.self = fnode;
+                        nt.fresh = true;
+                        pushFn(nt, fb, loc, fnode, "");
+                        tasks.add(nt);
+                        step(nt);
+                    } else {
+                        pushFn(t, fb, loc, t.self, b.s("ret").trim());
+                        t.self = fnode;
+                    }
+                    break;
+                }
+                case "return": {
+                    Object rv = b.s("val").trim().isEmpty() ? null : val(b.s("val"), t.self);
+                    while (!t.stack.isEmpty()) {
+                        Frame x = pop(t);
+                        if (x.fn) {
+                            if (rv != null && !x.rv.isEmpty()) putVar(x.rv, rv, t.self);
+                            break;
+                        }
+                    }
+                    if (rv != null) svars.put("retorno", rv);
+                    break;
+                }
+                case "advance":
+                case "speed":
+                    if (moveStep(t, b) == 2) {
+                        f.idx--;
+                        t.wait = 0.0001f;
+                    }
+                    break;
                 case "wait":
-                    t.wait = Math.max(0.0001f, (float) num(val(b.s("secs"), t.self)));
+                    t.wait = Math.max(0.0001f, (float) num(val(b.s("secs"), t.self)) + t.carry);
+                    t.carry = 0f;
+                    t.wk = true;
                     break;
                 case "repeat": {
                     int n = (int) num(val(b.s("n"), t.self));
@@ -1853,8 +2095,8 @@ public class Game {
                     break;
                 case "break":
                     while (!t.stack.isEmpty()) {
-                        Frame x = t.stack.remove(t.stack.size() - 1);
-                        if (x.kind != 0) break;
+                        Frame x = pop(t);
+                        if (x.kind != 0 || x.fn) break;
                     }
                     break;
                 default:
@@ -1890,14 +2132,22 @@ public class Game {
         rebuild();
     }
 
+    static boolean under(Node n, Node root) {
+        for (Node p = n; p != null; p = p.par) if (p == root) return true;
+        return false;
+    }
+
     void pump() {
         int guard = 0;
         while (!msgs.isEmpty() && guard++ < 500) {
-            String m = msgs.poll().trim();
+            Msg m = msgs.poll();
+            String nm = m.m.trim();
+            if (m.sc == 3 && pendingScene != null) gq.add(m);
             for (Node n : nodes) {
+                if (m.from != null && ((m.sc == 1 && n != m.from) || (m.sc == 2 && !under(n, m.from)))) continue;
                 for (int i = 0; i < n.script.size(); i++) {
                     Blk b = n.script.get(i);
-                    if (b.t.equals("recv") && b.s("msg").trim().equals(m)) spawn(b.body, n);
+                    if (b.t.equals("recv") && b.s("msg").trim().equals(nm)) spawn(b.body, n);
                 }
             }
         }
@@ -1926,6 +2176,13 @@ public class Game {
         }
         svars.clear();
         msgs.clear();
+        for (Msg m : gq) {
+            m.from = null;
+            msgs.add(m);
+        }
+        gq.clear();
+        tclk.clear();
+        fnMap = null;
         tws.clear();
         holds.clear();
         layerOps.clear();
@@ -2032,6 +2289,8 @@ public class Game {
     public void update(float dt) {
         animate(dt);
         if (edit) return;
+        curDt = dt;
+        clk += dt;
         if (!layerOps.isEmpty()) {
             for (Object[] o : layerOps) layer((Node) o[0], (String) o[1]);
             layerOps.clear();
@@ -2100,10 +2359,13 @@ public class Game {
                 t.fresh = false;
                 continue;
             }
-            if (t.tb != null) t.tt += dt;
             if (t.wait > 0f) {
                 t.wait -= dt;
                 if (t.wait > 0f) continue;
+                if (t.wk) {
+                    t.carry = Math.max(t.wait, -0.1f);
+                    t.wk = false;
+                }
                 t.wait = 0f;
             }
             step(t);
