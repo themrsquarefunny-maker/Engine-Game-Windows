@@ -50,7 +50,7 @@ public class Game {
         void sync(Game g);
     }
 
-    public static final String[] TYPES = {"Image", "Button", "ImageButton", "Label", "Color", "Sound", "AnimatedSprite", "Video", "Camera2D", "Group", "Anchor", "Grab"};
+    public static final String[] TYPES = {"Image", "Button", "ImageButton", "Label", "Color", "Sound", "AnimatedSprite", "Video", "Camera2D", "Group", "Anchor", "Grab", "Collision"};
 
     // ================= Valores de enum =================
     public static class EnumVal {
@@ -78,6 +78,7 @@ public class Game {
         String last, ck, cta;
         ArrayList<String> ctk;
         float acc;
+        boolean overlapping;
         Task task;
 
         public Blk(String t) {
@@ -409,7 +410,12 @@ public class Game {
     HashMap<String, String[]> enums = new HashMap<String, String[]>();
     HashSet<String> persist = new HashSet<String>();
     HashMap<String, Node> nameMap;
-    boolean hasPoll, orientChanged, useCam, snap, camSnap = true, hasVideo;
+    boolean hasPoll, hasCollisionEvents, orientChanged, useCam, snap, camSnap = true, hasVideo;
+    static final int MAX_SCENE_CLONES = 1024;
+    int sceneClones;
+    final ArrayList<Node> pendingClones = new ArrayList<Node>();
+    final HashSet<String> pendingCloneNames = new HashSet<String>();
+    final float[] collisionA = new float[8], collisionB = new float[8];
     public Layer layer;
     java.util.Random rnd = new java.util.Random();
     int swipeState = -1;
@@ -806,7 +812,7 @@ public class Game {
         } else if (type.equals("Anchor")) {
             n.w = 40;
             n.h = 40;
-        } else if (type.equals("Grab")) {
+        } else if (type.equals("Grab") || type.equals("Collision")) {
             n.w = 160;
             n.h = 160;
         }
@@ -815,6 +821,42 @@ public class Game {
         nodes.add(n);
         rebuild();
         return n;
+    }
+
+    void queueClone(Blk b, Node source, Node self) {
+        if (edit || source == null || sceneClones >= MAX_SCENE_CLONES) return;
+        Node clone;
+        try {
+            // Copia los ajustes actuales y los bloques, pero no el estado de ejecución.
+            clone = Node.fromJson(source.toJson());
+        } catch (Exception e) {
+            return;
+        }
+        String base = b.s("name").trim();
+        if (base.isEmpty() || base.equals("self")) base = source.name + "_copia";
+        String name = base;
+        for (int i = 2; byName(name) != null || pendingCloneNames.contains(name); i++) name = base + "_" + i;
+        clone.name = name;
+        clone.id = nextId++;
+        clone.current = false; // La copia de una cámara no reemplaza a la cámara activa.
+        if (!b.s("x").trim().isEmpty()) clone.x = (float) num(val(b.s("x"), self));
+        if (!b.s("y").trim().isEmpty()) clone.y = (float) num(val(b.s("y"), self));
+        pendingClones.add(clone);
+        pendingCloneNames.add(name);
+        sceneClones++;
+    }
+
+    void activateClones() {
+        if (pendingClones.isEmpty()) return;
+        int first = nodes.size();
+        nodes.addAll(pendingClones);
+        pendingClones.clear();
+        pendingCloneNames.clear();
+        fnMap = null;
+        swipeState = -1;
+        for (int i = first; i < nodes.size(); i++) initRuntimeNode(nodes.get(i));
+        rebuild();
+        startNodes(first);
     }
 
     public void remove(Node n) {
@@ -893,6 +935,67 @@ public class Game {
                         an != null ? an.wy + an.h / 2f : n.wy + n.h / 2f);
             }
             n.rotd = true;
+        }
+    }
+
+    // Esquinas en coordenadas de escena, incluyendo el giro heredado.
+    static void collisionCorners(Node n, float[] points) {
+        points[0] = points[6] = n.wx;
+        points[1] = points[3] = n.wy;
+        points[2] = points[4] = n.wx + n.w;
+        points[5] = points[7] = n.wy + n.h;
+        if (n.rotd) n.tm.mapPoints(points);
+    }
+
+    // Dos rectángulos se separan si sus proyecciones no se solapan en un eje de un lado.
+    static boolean separates(float[] a, float[] b) {
+        for (int i = 0; i < 4; i += 2) {
+            float x = a[i + 3] - a[i + 1], y = a[i] - a[i + 2];
+            float minA = Float.POSITIVE_INFINITY, maxA = Float.NEGATIVE_INFINITY;
+            float minB = Float.POSITIVE_INFINITY, maxB = Float.NEGATIVE_INFINITY;
+            for (int j = 0; j < 8; j += 2) {
+                float pa = a[j] * x + a[j + 1] * y, pb = b[j] * x + b[j + 1] * y;
+                minA = Math.min(minA, pa);
+                maxA = Math.max(maxA, pa);
+                minB = Math.min(minB, pb);
+                maxB = Math.max(maxB, pb);
+            }
+            if (maxA <= minB || maxB <= minA) return true;
+        }
+        return false;
+    }
+
+    boolean overlaps(Node a, Node b) {
+        if (b == null || a == b || !a.wvis || !b.wvis || !a.inOrder || !b.inOrder) return false;
+        if (a.w <= 0 || a.h <= 0 || b.w <= 0 || b.h <= 0) return false;
+        if (cam != null && viewMode.equals("camera") && a.fixed != b.fixed) return false;
+        if (!a.rotd && !b.rotd) {
+            return a.wx < b.wx + b.w && b.wx < a.wx + a.w && a.wy < b.wy + b.h && b.wy < a.wy + a.h;
+        }
+        collisionCorners(a, collisionA);
+        collisionCorners(b, collisionB);
+        return !separates(collisionA, collisionB) && !separates(collisionB, collisionA);
+    }
+
+    void pollCollisions() {
+        compute();
+        ArrayList<Object[]> hits = null;
+        for (Node n : nodes) {
+            if (!n.type.equals("Collision")) continue;
+            for (Blk b : n.script) {
+                if (!b.t.equals("collision")) continue;
+                boolean touching = overlaps(n, tgt(b, n));
+                if (touching && !b.overlapping) {
+                    if (hits == null) hits = new ArrayList<Object[]>();
+                    hits.add(new Object[]{b, n});
+                }
+                b.overlapping = touching;
+            }
+        }
+        // Ejecutar después de medir todos los pares: un evento puede mover otros nodos.
+        if (hits != null) for (Object[] hit : hits) {
+            if (pendingScene != null) break;
+            spawn(((Blk) hit[0]).body, (Node) hit[1]);
         }
     }
 
@@ -1780,6 +1883,9 @@ public class Game {
                     }
                 }
                 break;
+            case "clone":
+                queueClone(b, t, self);
+                break;
             case "setimg":
                 t.res = b.s("asset");
                 if (t.fit) fitNode(t);
@@ -2275,8 +2381,11 @@ public class Game {
                 nodes = new ArrayList<Node>();
             }
         } else {
-            nodes = sc.nodes;
+            nodes = edit ? sc.nodes : new ArrayList<Node>(sc.nodes);
         }
+        pendingClones.clear();
+        pendingCloneNames.clear();
+        sceneClones = 0;
         svars.clear();
         msgs.clear();
         for (Msg m : gq) {
@@ -2297,41 +2406,58 @@ public class Game {
         rebuild();
         nameMap = new HashMap<String, Node>();
         hasPoll = false;
+        hasCollisionEvents = false;
         cam = null;
         camSnap = true;
         hasVideo = false;
         sceneSerial++;
         for (Node n : nodes) {
-            nameMap.put(n.name, n);
-            if (n.type.equals("Video")) hasVideo = true;
-            n.playing = n.autoplay;
-            n.rot0 = n.rot;
-            n.norender = false;
-            n.frame = 0;
-            n.ft = 0;
-            n.pressed = false;
-            n.pid = -1;
-            if (n.type.equals("Camera2D") && (cam == null || (n.current && !cam.current))) cam = n;
-            for (Blk b : n.script) {
-                b.last = null;
-                b.acc = 0;
-                b.task = null;
-                if (b.t.equals("frame") || b.t.equals("change") || b.t.equals("every")) hasPoll = true;
-            }
+            nextId = Math.max(nextId, n.id + 1);
+            initRuntimeNode(n);
         }
-        for (Node n : nodes) if (n.type.equals("Grab") && !n.anchor.isEmpty()) grabTarget(n).anchor = n.anchor;
-        for (Node n : nodes) if (n.type.equals("Sound") && n.autoplay) playSound(n);
-        for (Node n : nodes) {
-            for (int i = 0; i < n.script.size(); i++) {
-                Blk b = n.script.get(i);
-                if (b.t.equals("start")) spawn(b.body, n);
-            }
-        }
+        startNodes(0);
         pump();
     }
 
+    void initRuntimeNode(Node n) {
+        nameMap.put(n.name, n);
+        if (n.type.equals("Video")) hasVideo = true;
+        n.playing = n.autoplay;
+        n.rot0 = n.rot;
+        n.norender = false;
+        n.frame = 0;
+        n.ft = 0;
+        n.pressed = false;
+        n.pid = -1;
+        if (n.type.equals("Camera2D") && (cam == null || (n.current && !cam.current))) cam = n;
+        for (Blk b : n.script) {
+            b.last = null;
+            b.acc = 0;
+            b.task = null;
+            b.overlapping = false;
+            if (b.t.equals("frame") || b.t.equals("change") || b.t.equals("every")) hasPoll = true;
+            if (b.t.equals("collision") && n.type.equals("Collision")) hasCollisionEvents = true;
+        }
+    }
+
+    void startNodes(int first) {
+        for (int i = first; i < nodes.size(); i++) {
+            Node n = nodes.get(i);
+            if (n.type.equals("Grab") && !n.anchor.isEmpty()) grabTarget(n).anchor = n.anchor;
+        }
+        for (int i = first; i < nodes.size(); i++) {
+            Node n = nodes.get(i);
+            if (n.type.equals("Sound") && n.autoplay) playSound(n);
+        }
+        for (int i = first; i < nodes.size(); i++) {
+            Node n = nodes.get(i);
+            for (Blk b : n.script) if (b.t.equals("start")) spawn(b.body, n);
+        }
+    }
+
     public boolean active() {
-        if (edit || hasPoll || hasVideo || pendingScene != null || orientChanged || useCam) return true;
+        if (edit || hasPoll || hasCollisionEvents || hasVideo || !pendingClones.isEmpty()
+                || pendingScene != null || orientChanged || useCam) return true;
         if (!tasks.isEmpty() || !tws.isEmpty() || !holds.isEmpty() || !msgs.isEmpty() || !grabs.isEmpty()) return true;
         for (Node n : nodes) {
             if (n.playing && n.type.equals("AnimatedSprite") && !n.frames.isEmpty()) return true;
@@ -2399,6 +2525,7 @@ public class Game {
         if (edit) return;
         curDt = dt;
         clk += dt;
+        if (pendingScene == null) activateClones();
         if (!layerOps.isEmpty()) {
             for (Object[] o : layerOps) layer((Node) o[0], (String) o[1]);
             layerOps.clear();
@@ -2479,6 +2606,7 @@ public class Game {
             step(t);
         }
         for (int i = tasks.size() - 1; i >= 0; i--) if (tasks.get(i).done) tasks.remove(i);
+        if (hasCollisionEvents && pendingScene == null) pollCollisions();
         pump();
         if (orientChanged) {
             orientChanged = false;
@@ -3124,6 +3252,7 @@ public class Game {
                     p.setStyle(Paint.Style.FILL);
                 }
                 break;
+            case "Collision":
             case "Grab":
                 if (edit && !snap) placeholder(c, n, a);
                 break;
