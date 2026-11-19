@@ -66,7 +66,7 @@ public class EditorActivity extends Activity {
             | InputType.TYPE_NUMBER_FLAG_SIGNED;
     static final int TXT = InputType.TYPE_CLASS_TEXT;
     static final int MP = ViewGroup.LayoutParams.MATCH_PARENT;
-    static final String[] PROPS = {"x", "y", "w", "h", "modulate", "visible", "text", "fps", "frame", "zoom"};
+    static final String[] PROPS = {"x", "y", "w", "h", "modulate", "visible", "text", "fps", "frame", "zoom", "rot"};
     static final String[] BASE_TYPES = {"int", "float", "bool", "string"};
 
     // tipo, etiqueta, E (evento) / S (bloque), campos "clave:etiqueta:tipo[:opciones]"
@@ -80,7 +80,7 @@ public class EditorActivity extends Activity {
         {"recv", "Recibir mensaje", "E", "msg:Mensaje:M"},
         {"frame", "Cada fotograma", "E"},
         {"every", "Cada X segundos", "E", "secs:Segundos:N"},
-        {"change", "Al cambiar una propiedad", "E", "node:Nodo:G", "prop:Propiedad:O:visible|modulate|x|y|w|h|text"},
+        {"change", "Al cambiar una propiedad", "E", "node:Nodo:G", "prop:Propiedad:O:visible|modulate|x|y|w|h|text|rot"},
         {"orient", "Al cambiar de orientación", "E"},
         {"func", "Función (evento)", "E", "name:Nombre de la función:T", "params:Parámetros (separados por coma):T"},
         {"send", "Transmitir mensaje", "S", "msg:Mensaje:M", "scope:Alcance:O:escena|nodo|jerarquía|global"},
@@ -127,12 +127,18 @@ public class EditorActivity extends Activity {
         {"pos", "Mover a (vacío = no cambia)", "S", "node:Nodo:G", "x:X:V", "y:Y:V"},
         {"advance", "Avanzar píxeles", "S", "node:Nodo:G", "dir:Dirección:O:derecha|izquierda|arriba|abajo|ángulo",
             "ang:Ángulo en grados (solo 'ángulo': 0 = derecha, 90 = abajo):V", "dist:Píxeles a avanzar:V",
-            "secs:Segundos (0 = al instante):V", "edge:No salir de los bordes:B"},
+            "secs:Segundos (0 = al instante):V", "edge:No salir de los bordes:B",
+            "anti:Antirebote (al llegar al borde se detiene del todo):B"},
+        {"rotate", "Rotar", "S", "node:Nodo:G", "mode:Modo:O:sumar|ir a", "deg:Grados (positivo = horario):V",
+            "secs:Segundos (0 = al instante):V"},
+        {"stoprender", "Dejar de renderizar", "S", "node:Nodo:G"},
+        {"startrender", "Renderizar de nuevo", "S", "node:Nodo:G"},
         {"speed", "Velocidad (inicial → final)", "S", "node:Nodo:G", "dir:Dirección:O:derecha|izquierda|arriba|abajo|ángulo",
             "ang:Ángulo en grados (solo 'ángulo'):V", "v0:Velocidad inicial (píxeles por segundo):V",
             "v1:Velocidad final (píxeles por segundo):V", "ramp:Segundos para pasar de la inicial a la final:V",
             "secs:Duración máxima en segundos (0 = mientras se cumpla la condición):V",
-            "edge:No salir de los bordes:B", "expr:Mientras:T"},
+            "edge:No salir de los bordes:B", "anti:Antirebote (al llegar al borde se detiene del todo):B",
+            "inf:Tiempo ilimitado (sigue hasta que la condición deje de cumplirse):B", "expr:Mientras:T"},
         {"text", "Cambiar texto", "S", "node:Nodo (Button):G", "val:Texto:V"},
         {"tween", "Cambio progresivo", "S", "node:Nodo:G", "what:Qué cambia:O:modulate|mover|tamaño",
             "x:Valor (modulate) o X:V", "y:Y (mover o tamaño):V", "secs:Segundos:N",
@@ -591,14 +597,20 @@ public class EditorActivity extends Activity {
         }
         if (showGeo) field(props, "Posición X", trimf(n.x), NUM, s -> n.x = pf(s, n.x));
         if (showGeo) field(props, "Posición Y", trimf(n.y), NUM, s -> n.y = pf(s, n.y));
-        if (showGeo) field(props, "Ancho", trimf(n.w), NUM, s -> {
+        boolean showSize = showGeo && !n.type.equals("Sound");
+        if (showSize) field(props, "Ancho", trimf(n.w), NUM, s -> {
             n.w = Math.max(1f, pf(s, n.w));
             if (fitBox[0] != null && fitBox[0].isChecked()) fitBox[0].setChecked(false);
         });
-        if (showGeo) field(props, "Alto", trimf(n.h), NUM, s -> {
+        if (showSize) field(props, "Alto", trimf(n.h), NUM, s -> {
             n.h = Math.max(1f, pf(s, n.h));
             if (fitBox[0] != null && fitBox[0].isChecked()) fitBox[0].setChecked(false);
         });
+
+        if (!n.type.equals("Sound") && !n.type.equals("Camera2D") && !n.type.equals("Anchor")) {
+            field(props, "Rotación (grados, positivo = horario)", trimf(n.rot), NUM, s -> n.rot = pf(s, n.rot));
+            nodePicker("Ancla de rotación (nodo Anchor; vacío = centro del nodo)", "Anchor", n.anchor, s -> n.anchor = s);
+        }
 
         // Según el tipo
         if (n.type.equals("Image") || n.type.equals("ImageButton")) {
@@ -723,6 +735,46 @@ public class EditorActivity extends Activity {
                     + "(en Ajustes) o con el bloque Usar viewport o cámara."));
         }
 
+        if (n.type.equals("Color")) {
+            props.addView(label("Color del recuadro"));
+            final View sw = new View(this);
+            sw.setBackgroundColor(n.color | 0xFF000000);
+            props.addView(sw, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+            props.addView(btn("Elegir color", x -> colorDialog(n.color, s -> {
+                try {
+                    n.color = 0xFF000000 | Integer.parseInt(s, 16);
+                } catch (Exception e) {
+                }
+                sw.setBackgroundColor(n.color);
+                pv.invalidate();
+            })));
+            props.addView(label("Se ve completo con modulate 1.0; menos modulate lo vuelve transparente."));
+        } else if (n.type.equals("Anchor")) {
+            props.addView(label("Punto de giro. En otro nodo (o en un Agarre) elígelo como Ancla: el objeto rotará alrededor de este punto. "
+                    + "Solo se ve en el editor."));
+        } else if (n.type.equals("Grab")) {
+            props.addView(label("Área que se agarra con el dedo. Si es hijo de un objeto, lo agarra a él."));
+            nodePicker("Objeto a agarrar (vacío = el padre de este nodo)", null, n.gtarget, s -> n.gtarget = s);
+            props.addView(label("Al agarrar"));
+            Spinner sm = spinner(new String[]{"arrastrar y soltar", "rotar jalando izquierda / derecha"});
+            sm.setSelection(n.gmode.equals("rotar") ? 1 : 0, false);
+            sm.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+                public void onItemSelected(AdapterView<?> a, View v, int pos, long id) {
+                    n.gmode = pos == 1 ? "rotar" : "arrastrar";
+                }
+
+                public void onNothingSelected(AdapterView<?> a) {
+                }
+            });
+            props.addView(sm);
+            nodePicker("Ancla del giro (nodo Anchor; vacío = centro del objeto)", "Anchor", n.anchor, s -> n.anchor = s);
+            field(props, "Límite de giro a la izquierda (grados; vacío = sin límite)", n.limL < 0 ? "" : trimf(n.limL), NUM,
+                    s -> n.limL = s.trim().isEmpty() ? -1f : Math.max(0f, pf(s, 0f)));
+            field(props, "Límite de giro a la derecha (grados; vacío = sin límite)", n.limR < 0 ? "" : trimf(n.limR), NUM,
+                    s -> n.limR = s.trim().isEmpty() ? -1f : Math.max(0f, pf(s, 0f)));
+            props.addView(label("Los límites se miden desde la rotación inicial del objeto. 0 = bloquea ese lado."));
+        }
+
         LinearLayout lr = new LinearLayout(this);
         for (final String[] m : new String[][]{{"▲ Subir", "subir"}, {"▼ Bajar", "bajar"}}) {
             lr.addView(btn(m[0], x -> {
@@ -745,6 +797,96 @@ public class EditorActivity extends Activity {
                     rebuildList();
                     rebuildProps();
                 }).setNegativeButton("Cancelar", null).show()));
+    }
+
+    // Selector de un nodo (por tipo; type == null = cualquiera, y "(padre)" como valor vacío)
+    void nodePicker(String lab, String type, String cur, final Str set) {
+        props.addView(label(lab));
+        final ArrayList<String> l = new ArrayList<String>();
+        l.add(type == null ? "(padre)" : "(ninguno)");
+        int si = 0;
+        for (Game.Node c : g.nodes) {
+            if (type != null && !c.type.equals(type)) continue;
+            l.add(c.name);
+            if (c.name.equals(cur)) si = l.size() - 1;
+        }
+        Spinner sp = spinner(l.toArray(new String[0]));
+        sp.setSelection(si, false);
+        sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            public void onItemSelected(AdapterView<?> a, View v, int pos, long id) {
+                set.set(pos == 0 ? "" : l.get(pos));
+            }
+
+            public void onNothingSelected(AdapterView<?> a) {
+            }
+        });
+        props.addView(sp);
+    }
+
+    // Selector de color: rojo, verde, azul o código hexadecimal RRGGBB
+    void colorDialog(int cur, final Str ok) {
+        final int[] c = {cur & 0xFFFFFF};
+        LinearLayout v = vbox();
+        v.setPadding(dp(20), dp(10), dp(20), dp(10));
+        final View sw = new View(this);
+        v.addView(sw, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64)));
+        final EditText hx = new EditText(this);
+        hx.setInputType(TXT);
+        final SeekBar[] sb = new SeekBar[3];
+        final Runnable upd = () -> {
+            sw.setBackgroundColor(0xFF000000 | c[0]);
+            String h = String.format(Locale.ROOT, "%06X", c[0]);
+            if (!hx.getText().toString().equals(h)) hx.setText(h);
+            for (int i = 0; i < 3; i++) sb[i].setProgress((c[0] >> (16 - 8 * i)) & 255);
+        };
+        String[] nm = {"Rojo", "Verde", "Azul"};
+        for (int i = 0; i < 3; i++) {
+            final int sh = 16 - 8 * i;
+            v.addView(label(nm[i]));
+            sb[i] = new SeekBar(this);
+            sb[i].setMax(255);
+            sb[i].setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                public void onProgressChanged(SeekBar s, int p, boolean user) {
+                    if (!user) return;
+                    c[0] = (c[0] & ~(255 << sh)) | (p << sh);
+                    sw.setBackgroundColor(0xFF000000 | c[0]);
+                    String h = String.format(Locale.ROOT, "%06X", c[0]);
+                    if (!hx.getText().toString().equals(h)) hx.setText(h);
+                }
+
+                public void onStartTrackingTouch(SeekBar s) {
+                }
+
+                public void onStopTrackingTouch(SeekBar s) {
+                }
+            });
+            v.addView(sb[i]);
+        }
+        v.addView(label("Código hexadecimal (RRGGBB)"));
+        hx.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence q, int a1, int b1, int d1) {
+            }
+
+            public void onTextChanged(CharSequence q, int a1, int b1, int d1) {
+            }
+
+            public void afterTextChanged(Editable q) {
+                if (q.length() != 6) return;
+                try {
+                    int n = Integer.parseInt(q.toString(), 16);
+                    if (n != c[0]) {
+                        c[0] = n;
+                        upd.run();
+                    }
+                } catch (Exception e) {
+                }
+            }
+        });
+        v.addView(hx);
+        upd.run();
+        new AlertDialog.Builder(this).setTitle("Color").setView(v)
+                .setPositiveButton("Aceptar", (d, w) -> ok.set(String.format(Locale.ROOT, "%06X", c[0])))
+                .setNegativeButton("Cancelar", null).show();
     }
 
     // ================= Assets =================
@@ -1016,6 +1158,7 @@ public class EditorActivity extends Activity {
         v.addView(label("Versión"));
         final EditText ev = new EditText(this);
         ev.setText("1.0");
+        ev.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(60)});
         v.addView(ev);
         v.addView(label("Paquete: com.[marca].[juego]  (vacío = automático)"));
         final android.content.SharedPreferences sp0 = getSharedPreferences("exp", 0);

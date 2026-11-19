@@ -25,7 +25,8 @@ public class Exporter {
     // plantilla antigua (26 letras): sigue funcionando, pero con paquetes de hasta 26 letras
     static final String PKG_OLD = "com.gx.placeholder00000000";
     static final String LABEL_PH = "LABELPLACEHOLDERXXXXXXXXXXXXXXXX";
-    static final String VER_PH = "VPLACEHOLDER";
+    static final String VER_PH = "VPLACEHOLDERXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+    static final String VER_OLD = "VPLACEHOLDER";
 
     static byte[] readAll(InputStream i) throws Exception {
         ByteArrayOutputStream o = new ByteArrayOutputStream();
@@ -75,17 +76,20 @@ public class Exporter {
         return false;
     }
 
-    // El paquete puede ser más corto que el texto de relleno: se acorta la cadena dentro del manifiesto
+    // El texto puede ser más corto que el relleno: se acorta la cadena dentro del manifiesto
     // (longitud + texto + fin de cadena) y el resto queda en ceros; nada más cambia de lugar.
-    static byte[] setPkg(byte[] d, String pkg) throws Exception {
-        String ph = has(d, PKG_PH, "UTF-8") || has(d, PKG_PH, "UTF-16LE") ? PKG_PH : PKG_OLD;
-        if (pkg.length() > ph.length()) throw new Exception("Paquete demasiado largo (máximo " + ph.length() + " letras)");
-        if (pkg.length() == ph.length()) {
-            d = rep(d, ph, pkg, "UTF-8");
-            return rep(d, ph, pkg, "UTF-16LE");
+    static byte[] setStr(byte[] d, String phNew, String phOld, String v, boolean strict) throws Exception {
+        String ph = has(d, phNew, "UTF-8") || has(d, phNew, "UTF-16LE") ? phNew : phOld;
+        if (v.length() > ph.length()) {
+            if (strict) throw new Exception("Paquete demasiado largo (máximo " + ph.length() + " letras)");
+            v = v.substring(0, ph.length());
         }
-        d = shrink(d, ph, pkg, false);
-        return shrink(d, ph, pkg, true);
+        if (v.length() == ph.length()) {
+            d = rep(d, ph, v, "UTF-8");
+            return rep(d, ph, v, "UTF-16LE");
+        }
+        d = shrink(d, ph, v, false);
+        return shrink(d, ph, v, true);
     }
 
     static byte[] shrink(byte[] d, String ph, String pkg, boolean u16) throws Exception {
@@ -113,12 +117,11 @@ public class Exporter {
 
     static byte[] patch(byte[] d, String pkg, String label, String ver) throws Exception {
         String lab = pad(label, LABEL_PH.length());
-        String vv = pad(ver, VER_PH.length());
-        d = setPkg(d, pkg);
+        String vv = pad(ver, ver.length()).trim().isEmpty() ? "1.0" : pad(ver, ver.length()).trim();
+        d = setStr(d, PKG_PH, PKG_OLD, pkg, true);
+        d = setStr(d, VER_PH, VER_OLD, vv, false);
         d = rep(d, LABEL_PH, lab, "UTF-8");
-        d = rep(d, VER_PH, vv, "UTF-8");
         d = rep(d, LABEL_PH, lab, "UTF-16LE");
-        d = rep(d, VER_PH, vv, "UTF-16LE");
         return d;
     }
 
