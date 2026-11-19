@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.gx.placeholder00000000000000000000000000000000000000000000000000000000000000"
     android:versionCode="1"
-    android:versionName="VPLACEHOLDER">
+    android:versionName="VPLACEHOLDERXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX">
     <application android:label="LABELPLACEHOLDERXXXXXXXXXXXXXXXX"
         android:icon="@mipmap/ic">
         <activity android:name="com.mini.engine.PlayActivity" android:exported="true"

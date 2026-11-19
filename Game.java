@@ -50,7 +50,7 @@ public class Game {
         void sync(Game g);
     }
 
-    public static final String[] TYPES = {"Image", "Button", "ImageButton", "Label", "Sound", "AnimatedSprite", "Video", "Camera2D", "Group"};
+    public static final String[] TYPES = {"Image", "Button", "ImageButton", "Label", "Color", "Sound", "AnimatedSprite", "Video", "Camera2D", "Group", "Anchor", "Grab"};
 
     // ================= Valores de enum =================
     public static class EnumVal {
@@ -158,6 +158,12 @@ public class Game {
         public int pid = -1, frame;
         public float ft;
         public HashMap<String, Object> vars = new HashMap<String, Object>();
+        // rotación, ancla y agarre
+        public float rot, rot0, limL = -1f, limR = -1f;
+        public String anchor = "", gtarget = "", gmode = "arrastrar";
+        public boolean norender, rotd, vwas;
+        Matrix tm;
+        float gx, gy, ga, gacc, grot;
         Node par;
         boolean inOrder, mpWas;
         MediaPlayer mp;
@@ -210,6 +216,12 @@ public class Game {
             o.put("ow", outline);
             o.put("vol", vol);
             o.put("font", font);
+            if (rot != 0f) o.put("rot", rot);
+            if (!anchor.isEmpty()) o.put("anc", anchor);
+            if (!gtarget.isEmpty()) o.put("gt", gtarget);
+            if (!gmode.equals("arrastrar")) o.put("gm", gmode);
+            if (limL >= 0f) o.put("lL", limL);
+            if (limR >= 0f) o.put("lR", limR);
             JSONArray fr = new JSONArray();
             for (String s : frames) fr.put(s);
             o.put("fr", fr);
@@ -260,6 +272,12 @@ public class Game {
             n.align = o.optInt("al", 1);
             n.valign = o.optInt("vl", 1);
             n.color = o.optInt("col", 0xFFFFFFFF);
+            n.rot = (float) o.optDouble("rot", 0);
+            n.anchor = o.optString("anc", "");
+            n.gtarget = o.optString("gt", "");
+            n.gmode = o.optString("gm", "arrastrar");
+            n.limL = (float) o.optDouble("lL", -1);
+            n.limR = (float) o.optDouble("lR", -1);
             n.ocolor = o.optInt("oc", 0xFF000000);
             n.outline = (float) o.optDouble("ow", 0);
             n.vol = (float) o.optDouble("vol", 1);
@@ -407,6 +425,11 @@ public class Game {
     float curDt;
     double clk;
     Task curTask;
+    ArrayList<Node> grabs = new ArrayList<Node>();
+    HashSet<Blk> infRun = new HashSet<Blk>();
+    final float[] fp = new float[2];
+    final Matrix hm = new Matrix();
+    float mx, my;
     HashMap<Blk, float[]> tclk = new HashMap<Blk, float[]>();
     HashMap<String, ArrayList<Object[]>> fnMap;
     ArrayList<Tw> tws = new ArrayList<Tw>();
@@ -776,6 +799,16 @@ public class Game {
             n.w = 640;
             n.h = 360;
             n.autoplay = true;
+        } else if (type.equals("Color")) {
+            n.w = 300;
+            n.h = 300;
+            n.color = 0xFF4CAF50;
+        } else if (type.equals("Anchor")) {
+            n.w = 40;
+            n.h = 40;
+        } else if (type.equals("Grab")) {
+            n.w = 160;
+            n.h = 160;
         }
         n.x = vw / 2f - n.w / 2f;
         n.y = vh / 2f - n.h / 2f;
@@ -841,17 +874,25 @@ public class Game {
         for (int i = 0; i < order.size(); i++) {
             Node n = order.get(i);
             Node pn = n.par;
-            if (pn != null && n.inherit) {
-                n.wx = pn.wx + n.x;
-                n.wy = pn.wy + n.y;
-                n.wa = pn.wa * n.alpha;
-                n.wvis = pn.wvis && n.visible;
-            } else {
-                n.wx = n.x;
-                n.wy = n.y;
-                n.wa = n.alpha;
-                n.wvis = n.visible;
+            boolean inh = pn != null && n.inherit;
+            n.wx = inh ? pn.wx + n.x : n.x;
+            n.wy = inh ? pn.wy + n.y : n.y;
+            n.wa = inh ? pn.wa * n.alpha : n.alpha;
+            n.wvis = (!inh || pn.wvis) && n.visible && !n.norender;
+            Matrix pm = inh && pn.rotd ? pn.tm : null;
+            if (n.rot == 0f && pm == null) {
+                n.rotd = false;
+                continue;
             }
+            if (n.tm == null) n.tm = new Matrix();
+            if (pm != null) n.tm.set(pm);
+            else n.tm.reset();
+            if (n.rot != 0f) {
+                Node an = n.anchor.isEmpty() ? null : byName(n.anchor);
+                n.tm.preRotate(n.rot, an != null ? an.wx + an.w / 2f : n.wx + n.w / 2f,
+                        an != null ? an.wy + an.h / 2f : n.wy + n.h / 2f);
+            }
+            n.rotd = true;
         }
     }
 
@@ -1229,6 +1270,7 @@ public class Game {
             case "fps": return Double.valueOf(n.fps);
             case "frame": return Long.valueOf(n.frame);
             case "zoom": return Double.valueOf(n.zoom);
+            case "rot": return Double.valueOf(n.rot);
             default: return null;
         }
     }
@@ -1315,6 +1357,21 @@ public class Game {
     }
 
     // ¿Hay algún dedo tocando la pantalla justo encima de este nodo?
+    // ¿el punto (ya con la cámara aplicada) cae dentro del nodo? Si está rotado se lleva a su espacio.
+    boolean inNode(Node n, float px, float py) {
+        if (n.rotd) {
+            if (!n.tm.invert(hm)) return false;
+            fp[0] = px;
+            fp[1] = py;
+            hm.mapPoints(fp);
+            px = fp[0];
+            py = fp[1];
+        }
+        mx = px;
+        my = py;
+        return px >= n.wx && px <= n.wx + n.w && py >= n.wy && py <= n.wy + n.h;
+    }
+
     boolean fingerIn(Node n) {
         if (n == null || !n.wvis || (n.wa <= 0.003f && !n.touchAlways)) return false;
         for (int i = 0; i < 16; i++) {
@@ -1323,8 +1380,7 @@ public class Game {
             boolean c = useCam && !n.fixed;
             float px = c ? (vx - vw / 2f) / camZ + camX : vx;
             float py = c ? (vy - vh / 2f) / camZ + camY : vy;
-            if (px >= n.wx && px <= n.wx + n.w && py >= n.wy && py <= n.wy + n.h
-                    && (!n.smart || maskHit(n, px, py))) return true;
+            if (inNode(n, px, py) && (!n.smart || maskHit(n, mx, my))) return true;
         }
         return false;
     }
@@ -1570,6 +1626,23 @@ public class Game {
         return not ? !res : res;
     }
 
+    // Libera de la memoria las imágenes que ya nadie dibuja (se vuelven a cargar solas al renderizar de nuevo)
+    void dropRes(Node n) {
+        ArrayList<String> rs = new ArrayList<String>(n.frames);
+        rs.add(n.res);
+        for (String r : rs) {
+            if (r.isEmpty()) continue;
+            boolean used = false;
+            for (Node q : nodes) {
+                if (q != n && !q.norender && (r.equals(q.res) || q.frames.contains(r))) {
+                    used = true;
+                    break;
+                }
+            }
+            if (!used) cache.remove(r);
+        }
+    }
+
     Node tgt(Blk b, Node self) {
         String n = b.s("node").trim();
         if (n.isEmpty() || n.equals("self")) return self;
@@ -1758,6 +1831,21 @@ public class Game {
             case "vis":
                 t.visible = truthy(val(b.s("val"), self));
                 break;
+            case "stoprender":
+                t.norender = true;
+                dropRes(t);
+                if (t.type.equals("Video")) {
+                    t.vwas = t.playing;
+                    t.vcmd = "pause";
+                }
+                break;
+            case "startrender":
+                t.norender = false;
+                if (t.vwas) {
+                    t.vwas = false;
+                    t.vcmd = "play";
+                }
+                break;
             case "pos":
                 if (!b.s("x").trim().isEmpty()) t.x = (float) num(val(b.s("x"), self));
                 if (!b.s("y").trim().isEmpty()) t.y = (float) num(val(b.s("y"), self));
@@ -1897,44 +1985,56 @@ public class Game {
         return loc;
     }
 
-    // Avanzar píxeles / Velocidad: 1 = terminó, 2 = sigue (se vuelve a llamar en el siguiente fotograma)
+    // Avanzar / Velocidad / Rotar: 1 = terminó, 2 = sigue (se vuelve a llamar en el siguiente fotograma)
     int moveStep(Task t, Blk b) {
         Node n = tgt(b, t.self);
         if (n == null) return 1;
-        boolean sp = b.t.equals("speed");
+        boolean sp = b.t.equals("speed"), rt = b.t.equals("rotate"), to = rt && b.s("mode").startsWith("ir");
+        boolean inf = sp && b.b("inf");
         float secs = (float) num(val(b.s("secs"), t.self));
-        if (!sp && secs <= 0) {
-            move(n, b, (float) num(val(b.s("dist"), t.self)), t.self);
-            return 1;
+        float[] e = t.tm == null ? null : t.tm.get(b);
+        if (e == null) {
+            if (secs <= 0 && !sp) {
+                float d = (float) num(val(b.s(rt ? "deg" : "dist"), t.self));
+                if (rt) n.rot = to ? d : n.rot + d;
+                else move(n, b, d, t.self);
+                return 1;
+            }
+            if (inf && !infRun.add(b)) return 1;
+            if (t.tm == null) t.tm = new HashMap<Blk, float[]>();
+            t.tm.put(b, e = new float[2]);
+            e[1] = n.rot;
         }
         String cx = sp ? b.s("expr").trim() : "";
-        if (!cx.isEmpty() && !evalExpr(b, t.self)) {
-            if (t.tm != null) t.tm.remove(b);
-            return 1;
+        boolean end = !cx.isEmpty() && !evalExpr(b, t.self);
+        if (!end) {
+            float el0 = e[0];
+            e[0] += curDt;
+            if (sp) {
+                float v0 = (float) num(val(b.s("v0"), t.self)), v1 = (float) num(val(b.s("v1"), t.self));
+                float ramp = (float) num(val(b.s("ramp"), t.self));
+                float va = ramp > 0 ? v0 + (v1 - v0) * Math.min(1f, el0 / ramp) : v1;
+                float vb = ramp > 0 ? v0 + (v1 - v0) * Math.min(1f, e[0] / ramp) : v1;
+                end = move(n, b, (va + vb) / 2f * curDt, t.self)
+                        || (!inf && (secs > 0 ? e[0] >= secs : cx.isEmpty() && e[0] >= Math.max(ramp, 1f)));
+            } else if (rt) {
+                float p1 = Math.min(1f, e[0] / secs), d = (float) num(val(b.s("deg"), t.self));
+                n.rot = to ? e[1] + (d - e[1]) * p1 : e[1] + d * p1;
+                end = p1 >= 1f;
+            } else {
+                float p0 = Math.min(1f, el0 / secs), p1 = Math.min(1f, e[0] / secs);
+                end = move(n, b, (float) num(val(b.s("dist"), t.self)) * (p1 - p0), t.self) || p1 >= 1f;
+            }
         }
-        if (t.tm == null) t.tm = new HashMap<Blk, float[]>();
-        float[] e = t.tm.get(b);
-        if (e == null) t.tm.put(b, e = new float[1]);
-        float el0 = e[0];
-        e[0] += curDt;
-        boolean end;
-        if (!sp) {
-            float p0 = Math.min(1f, el0 / secs), p1 = Math.min(1f, e[0] / secs);
-            move(n, b, (float) num(val(b.s("dist"), t.self)) * (p1 - p0), t.self);
-            end = p1 >= 1f;
-        } else {
-            float v0 = (float) num(val(b.s("v0"), t.self)), v1 = (float) num(val(b.s("v1"), t.self));
-            float ramp = (float) num(val(b.s("ramp"), t.self));
-            float va = ramp > 0 ? v0 + (v1 - v0) * Math.min(1f, el0 / ramp) : v1;
-            float vb = ramp > 0 ? v0 + (v1 - v0) * Math.min(1f, e[0] / ramp) : v1;
-            move(n, b, (va + vb) / 2f * curDt, t.self);
-            end = secs > 0 ? e[0] >= secs : (cx.isEmpty() && e[0] >= Math.max(ramp, 1f));
+        if (end) {
+            t.tm.remove(b);
+            if (inf) infRun.remove(b);
         }
-        if (end) t.tm.remove(b);
         return end ? 1 : 2;
     }
 
-    void move(Node n, Blk b, float d, Node self) {
+    // Mueve el nodo; con antirebote devuelve true si chocó con el borde (el bloque debe detenerse del todo)
+    boolean move(Node n, Blk b, float d, Node self) {
         float ux = 1f, uy = 0f;
         switch (b.s("dir")) {
             case "izquierda": ux = -1f; break;
@@ -1950,11 +2050,13 @@ public class Game {
         }
         n.x += ux * d;
         n.y += uy * d;
-        if (b.b("edge")) {
-            float mw = n.par != null ? n.par.w : vw, mh = n.par != null ? n.par.h : vh;
-            n.x = Math.max(0f, Math.min(n.x, mw - n.w));
-            n.y = Math.max(0f, Math.min(n.y, mh - n.h));
-        }
+        boolean anti = b.b("anti");
+        if (!anti && !b.b("edge")) return false;
+        float ox = n.x, oy = n.y;
+        float mw = n.par != null ? n.par.w : vw, mh = n.par != null ? n.par.h : vh;
+        n.x = Math.max(0f, Math.min(n.x, mw - n.w));
+        n.y = Math.max(0f, Math.min(n.y, mh - n.h));
+        return anti && (n.x != ox || n.y != oy);
     }
 
     void step0(Task t) {
@@ -2072,6 +2174,7 @@ public class Game {
                 }
                 case "advance":
                 case "speed":
+                case "rotate":
                     if (moveStep(t, b) == 2) {
                         f.idx--;
                         t.wait = 0.0001f;
@@ -2183,6 +2286,8 @@ public class Game {
         gq.clear();
         tclk.clear();
         fnMap = null;
+        grabs.clear();
+        infRun.clear();
         tws.clear();
         holds.clear();
         layerOps.clear();
@@ -2200,6 +2305,8 @@ public class Game {
             nameMap.put(n.name, n);
             if (n.type.equals("Video")) hasVideo = true;
             n.playing = n.autoplay;
+            n.rot0 = n.rot;
+            n.norender = false;
             n.frame = 0;
             n.ft = 0;
             n.pressed = false;
@@ -2212,6 +2319,7 @@ public class Game {
                 if (b.t.equals("frame") || b.t.equals("change") || b.t.equals("every")) hasPoll = true;
             }
         }
+        for (Node n : nodes) if (n.type.equals("Grab") && !n.anchor.isEmpty()) grabTarget(n).anchor = n.anchor;
         for (Node n : nodes) if (n.type.equals("Sound") && n.autoplay) playSound(n);
         for (Node n : nodes) {
             for (int i = 0; i < n.script.size(); i++) {
@@ -2224,7 +2332,7 @@ public class Game {
 
     public boolean active() {
         if (edit || hasPoll || hasVideo || pendingScene != null || orientChanged || useCam) return true;
-        if (!tasks.isEmpty() || !tws.isEmpty() || !holds.isEmpty() || !msgs.isEmpty()) return true;
+        if (!tasks.isEmpty() || !tws.isEmpty() || !holds.isEmpty() || !msgs.isEmpty() || !grabs.isEmpty()) return true;
         for (Node n : nodes) {
             if (n.playing && n.type.equals("AnimatedSprite") && !n.frames.isEmpty()) return true;
         }
@@ -2234,7 +2342,7 @@ public class Game {
     void animate(float dt) {
         for (int k = 0; k < nodes.size(); k++) {
             Node n = nodes.get(k);
-            if (!n.type.equals("AnimatedSprite") || n.frames.isEmpty()) continue;
+            if (!n.type.equals("AnimatedSprite") || n.frames.isEmpty() || n.norender) continue;
             boolean on = edit ? n.preview : n.playing;
             if (!on) continue;
             float spf = 1f / Math.max(0.1f, n.fps);
@@ -2393,7 +2501,7 @@ public class Game {
 
     // ================= Entrada =================
     boolean touchable(Node n) {
-        if (n.type.equals("Button") || n.type.equals("ImageButton")) return true;
+        if (n.type.equals("Button") || n.type.equals("ImageButton") || n.type.equals("Grab")) return true;
         if (n.tch < 0) n.tch = wantsTouch(n.script) ? 1 : 0;
         return n.tch == 1;
     }
@@ -2422,6 +2530,7 @@ public class Game {
             pty[pid] = vy;
             pton[pid] = true;
         }
+        for (int i = grabs.size() - 1; i >= 0; i--) if (grabs.get(i).pid == pid) grabMove(grabs.get(i), vx, vy);
         if (swipeState < 0) {
             swipeState = 0;
             for (Node n : nodes) if (scanSwipe(n.script)) swipeState = 1;
@@ -2449,6 +2558,58 @@ public class Game {
         return (py - oy) / sy;
     }
 
+    Node grabTarget(Node g) {
+        Node t = g.gtarget.isEmpty() ? g.par : byName(g.gtarget);
+        return t != null ? t : g;
+    }
+
+    float grabAngle(Node g, Node t) {
+        Node an = g.anchor.isEmpty() ? null : byName(g.anchor);
+        float px = an != null ? an.wx + an.w / 2f : t.wx + t.w / 2f;
+        float py = an != null ? an.wy + an.h / 2f : t.wy + t.h / 2f;
+        return (float) Math.toDegrees(Math.atan2(g.gy - py, g.gx - px));
+    }
+
+    void grabStart(Node g, float vx, float vy) {
+        Node t = grabTarget(g);
+        g.gx = useCam && !g.fixed ? (vx - vw / 2f) / camZ + camX : vx;
+        g.gy = useCam && !g.fixed ? (vy - vh / 2f) / camZ + camY : vy;
+        g.gacc = 0f;
+        g.grot = t.rot;
+        g.ga = grabAngle(g, t);
+        if (!grabs.contains(g)) grabs.add(g);
+    }
+
+    // arrastrar: el objeto sigue al dedo. rotar: gira alrededor del ancla según hacia dónde jalas
+    void grabMove(Node g, float vx, float vy) {
+        Node t = grabTarget(g);
+        float cx = useCam && !g.fixed ? (vx - vw / 2f) / camZ + camX : vx;
+        float cy = useCam && !g.fixed ? (vy - vh / 2f) / camZ + camY : vy;
+        float dx = cx - g.gx, dy = cy - g.gy;
+        g.gx = cx;
+        g.gy = cy;
+        if (g.gmode.equals("rotar")) {
+            float a = grabAngle(g, t), d = a - g.ga;
+            if (d > 180f) d -= 360f;
+            else if (d < -180f) d += 360f;
+            g.ga = a;
+            g.gacc += d;
+            float r = g.grot + g.gacc;
+            float lo = g.limL >= 0f ? t.rot0 - g.limL : -1e9f, hi = g.limR >= 0f ? t.rot0 + g.limR : 1e9f;
+            if (r < lo) {
+                r = lo;
+                g.gacc = lo - g.grot;
+            } else if (r > hi) {
+                r = hi;
+                g.gacc = hi - g.grot;
+            }
+            t.rot = r;
+        } else {
+            t.x += dx;
+            t.y += dy;
+        }
+    }
+
     public Node hit(float vx, float vy, boolean onlyTouchable) {
         float cx = useCam ? (vx - vw / 2f) / camZ + camX : vx;
         float cy = useCam ? (vy - vh / 2f) / camZ + camY : vy;
@@ -2459,8 +2620,8 @@ public class Game {
             if (onlyTouchable && ((n.wa <= 0.003f && !n.touchAlways) || !touchable(n))) continue;
             float px = (useCam && !n.fixed) ? cx : vx;
             float py = (useCam && !n.fixed) ? cy : vy;
-            if (px >= n.wx && px <= n.wx + n.w && py >= n.wy && py <= n.wy + n.h) {
-                if (onlyTouchable && n.smart && !maskHit(n, px, py)) continue;
+            if (inNode(n, px, py)) {
+                if (onlyTouchable && n.smart && !maskHit(n, mx, my)) continue;
                 return n;
             }
         }
@@ -2477,6 +2638,7 @@ public class Game {
         if (n == null) return;
         n.pressed = true;
         n.pid = pid;
+        if (n.type.equals("Grab")) grabStart(n, vx, vy);
         for (int i = 0; i < n.script.size(); i++) {
             Blk b = n.script.get(i);
             if (b.t.equals("press")) {
@@ -2497,6 +2659,7 @@ public class Game {
             if (n.pid == pid) {
                 n.pid = -1;
                 n.pressed = false;
+                grabs.remove(n);
             }
             if (n.swPid == pid) {
                 n.swPid = -1;
@@ -2507,6 +2670,7 @@ public class Game {
 
     public void upAll() {
         for (int i = 0; i < 16; i++) pton[i] = false;
+        grabs.clear();
         for (Node n : nodes) {
             n.pid = -1;
             n.pressed = false;
@@ -2590,6 +2754,7 @@ public class Game {
     }
 
     public int handleAt(Node n, float vx, float vy, float tol) {
+        if (n.type.equals("Sound")) return -1;
         int best = -1;
         float bd = tol * tol;
         for (int i = 0; i < 8; i++) {
@@ -2823,12 +2988,17 @@ public class Game {
         }
         if (edit && sel != null && sel.inOrder && sel.smart) drawMask(c, sel);
         if (edit && sel != null && sel.inOrder) {
+            if (sel.rotd) {
+                c.save();
+                c.concat(sel.tm);
+            }
             p.setStyle(Paint.Style.STROKE);
             p.setStrokeWidth(3f / Math.max(0.1f, sx));
             p.setColor(0xFFFF00FF);
             c.drawRect(sel.wx, sel.wy, sel.wx + sel.w, sel.wy + sel.h, p);
             p.setStyle(Paint.Style.FILL);
-            drawHandles(c, sel);
+            if (!sel.type.equals("Sound")) drawHandles(c, sel);
+            if (sel.rotd) c.restore();
         }
         c.restore();
     }
@@ -2871,6 +3041,17 @@ public class Game {
     }
 
     void drawNode(Canvas c, Node n, boolean cull) {
+        if (n.rotd && n.wvis && n.wa > 0.003f) {
+            c.save();
+            c.concat(n.tm);
+            drawBody(c, n, false);
+            c.restore();
+        } else {
+            drawBody(c, n, cull);
+        }
+    }
+
+    void drawBody(Canvas c, Node n, boolean cull) {
         if (!n.wvis || n.wa <= 0.003f) return;
         if (cull && (n.wx > vw || n.wy > vh || n.wx + n.w < 0 || n.wy + n.h < 0)) return;
         int a = Math.max(0, Math.min(255, (int) (n.wa * 255)));
@@ -2925,6 +3106,26 @@ public class Game {
                         placeholder(c, n, a);
                     }
                 }
+                break;
+            case "Color":
+                p.setColor(n.color);
+                p.setAlpha(((n.color >>> 24) * a) / 255);
+                c.drawRect(rf, p);
+                break;
+            case "Anchor":
+                if (edit && !snap) {
+                    float ax = rf.centerX(), ay = rf.centerY(), ar = Math.min(n.w, n.h) / 2f;
+                    p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeWidth(3f);
+                    p.setColor(0xFFFFAA00);
+                    c.drawCircle(ax, ay, ar * 0.6f, p);
+                    c.drawLine(ax - ar, ay, ax + ar, ay, p);
+                    c.drawLine(ax, ay - ar, ax, ay + ar, p);
+                    p.setStyle(Paint.Style.FILL);
+                }
+                break;
+            case "Grab":
+                if (edit && !snap) placeholder(c, n, a);
                 break;
             case "Sound":
                 break;
