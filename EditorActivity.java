@@ -72,13 +72,14 @@ public class EditorActivity extends Activity {
     // tipo, etiqueta, E (evento) / S (bloque), campos "clave:etiqueta:tipo[:opciones]"
     // tipos: T texto, N número, V valor (con selector), R variable (crear o elegir), Q variable existente,
     //        M mensaje, B sí/no, G nodo, I imagen, A audio, C escena, Y tipo de variable,
-    //        L lista de variables, E lista de valores de enum, O opciones
+    //        L lista de variables, E lista de valores de enum, O opciones, H destino de colisión
     static final String[][] SPEC = {
         {"start", "Al iniciar", "E"},
         {"press", "Al presionar", "E"},
         {"hold", "Al mantener presionado", "E"},
         {"recv", "Recibir mensaje", "E", "msg:Mensaje:M"},
         {"frame", "Cada fotograma", "E"},
+        {"collision", "Al colisionar", "E", "node:Nodo con el que colisiona:H"},
         {"every", "Cada X segundos", "E", "secs:Segundos:N"},
         {"change", "Al cambiar una propiedad", "E", "node:Nodo:G", "prop:Propiedad:O:visible|modulate|x|y|w|h|text|rot"},
         {"orient", "Al cambiar de orientación", "E"},
@@ -125,6 +126,8 @@ public class EditorActivity extends Activity {
                 "touch:Permitir tocar aunque la transparencia sea máxima (alpha 0):B"},
         {"vis", "Visibilidad", "S", "node:Nodo:G", "val:Visible:O:true|false"},
         {"pos", "Mover a (vacío = no cambia)", "S", "node:Nodo:G", "x:X:V", "y:Y:V"},
+        {"clone", "Clonar nodo", "S", "node:Nodo a clonar:G", "name:Nombre de la copia (opcional):T",
+            "x:X (vacío = igual al original):V", "y:Y (vacío = igual al original):V"},
         {"advance", "Avanzar píxeles", "S", "node:Nodo:G", "dir:Dirección:O:derecha|izquierda|arriba|abajo|ángulo",
             "ang:Ángulo en grados (solo 'ángulo': 0 = derecha, 90 = abajo):V", "dist:Píxeles a avanzar:V",
             "secs:Segundos (0 = al instante):V", "edge:No salir de los bordes:B",
@@ -752,6 +755,9 @@ public class EditorActivity extends Activity {
         } else if (n.type.equals("Anchor")) {
             props.addView(label("Punto de giro. En otro nodo (o en un Agarre) elígelo como Ancla: el objeto rotará alrededor de este punto. "
                     + "Solo se ve en el editor."));
+        } else if (n.type.equals("Collision")) {
+            props.addView(label("Área rectangular invisible durante el juego. Agrega el evento 'Al colisionar' "
+                    + "a este nodo y elige el otro nodo. Se ejecuta al empezar cada solapamiento, sin bloquear el movimiento."));
         } else if (n.type.equals("Grab")) {
             props.addView(label("Área que se agarra con el dedo. Si es hijo de un objeto, lo agarra a él."));
             nodePicker("Objeto a agarrar (vacío = el padre de este nodo)", null, n.gtarget, s -> n.gtarget = s);
@@ -1815,6 +1821,7 @@ public class EditorActivity extends Activity {
         final ArrayList<String> types = new ArrayList<String>();
         ArrayList<String> labels = new ArrayList<String>();
         for (String[] s : SPEC) {
+            if (s[0].equals("collision") && (scriptOwner == null || !scriptOwner.type.equals("Collision"))) continue;
             boolean cs = s[0].equals("case") || s[0].equals("default");
             if (s[2].equals("E") == events && cs == inMatch) {
                 types.add(s[0]);
@@ -1884,7 +1891,12 @@ public class EditorActivity extends Activity {
             } else {
                 String[] opts;
                 if (kind.equals("G")) opts = nodeNames();
-                else if (kind.equals("I")) opts = withEmpty(assets(true));
+                else if (kind.equals("H")) {
+                    ArrayList<String> targets = new ArrayList<String>();
+                    targets.add("(ninguno)");
+                    for (Game.Node n : g.nodes) if (n != scriptOwner) targets.add(n.name);
+                    opts = targets.toArray(new String[0]);
+                } else if (kind.equals("I")) opts = withEmpty(assets(true));
                 else if (kind.equals("A")) opts = withEmpty(assets(false));
                 else if (kind.equals("W")) opts = withEmpty(videoAssets());
                 else if (kind.equals("C")) opts = sceneNames();
@@ -1900,6 +1912,11 @@ public class EditorActivity extends Activity {
             keys.add(key);
             kinds.add(kind);
             holders.add(holder);
+        }
+        if (b.t.equals("clone")) {
+            v.addView(label("La copia aparece en el siguiente fotograma con los mismos ajustes, bloques y padre, "
+                    + "pero sin los nodos hijos. Solo existe durante la ejecución de la escena (máximo "
+                    + Game.MAX_SCENE_CLONES + " copias por escena)."));
         }
         if (b.t.equals("enumnext") || b.t.equals("enum")) {
             v.addView(btn("Información del enum", x -> {
@@ -1965,7 +1982,8 @@ public class EditorActivity extends Activity {
                         } else {
                             Spinner s = (Spinner) w;
                             val = String.valueOf(s.getSelectedItem());
-                            if ((kind.equals("I") || kind.equals("A") || kind.equals("W") || kind.equals("Z")) && s.getSelectedItemPosition() == 0) val = "";
+                            if ((kind.equals("I") || kind.equals("A") || kind.equals("W") || kind.equals("Z")
+                                    || kind.equals("H")) && s.getSelectedItemPosition() == 0) val = "";
                         }
                         b.f.put(keys.get(i), val);
                     }
