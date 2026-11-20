@@ -56,6 +56,10 @@ public class ProjectsActivity extends Activity {
         nb.setText("＋ Nuevo proyecto");
         nb.setOnClickListener(x -> newProject());
         col.addView(nb);
+        Button tb = new Button(this);
+        tb.setText("＋ Juego de prueba (2 escenas)");
+        tb.setOnClickListener(x -> createSampleProject());
+        col.addView(tb);
         Button ib = new Button(this);
         ib.setText("Importar proyecto (.zip)");
         ib.setOnClickListener(x -> {
@@ -179,6 +183,100 @@ public class ProjectsActivity extends Activity {
             File d = create(s);
             open(d);
         });
+    }
+
+    void writePngSquare(File f, int argb) throws Exception {
+        android.graphics.Bitmap bm = android.graphics.Bitmap.createBitmap(64, 64, android.graphics.Bitmap.Config.ARGB_8888);
+        bm.eraseColor(argb);
+        try (OutputStream o = new FileOutputStream(f)) {
+            bm.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, o);
+        }
+        bm.recycle();
+    }
+
+    void createSampleProject() {
+        try {
+            File d = create("MiJuegoPrueba");
+            File ad = new File(d, "assets");
+            writePngSquare(new File(ad, "frame1.png"), 0xFFE53935);
+            writePngSquare(new File(ad, "frame2.png"), 0xFF43A047);
+            writePngSquare(new File(ad, "frame3.png"), 0xFF1E88E5);
+            writePngSquare(new File(ad, "caja.png"), 0xFFFFB300);
+
+            Game g = new Game(null);
+            g.vwL = 640; g.vhL = 360; g.vwP = 360; g.vhP = 640;
+            g.applyOrientation(true);
+            g.leftClickTouch = true;
+
+            Game.Scene s1 = g.scenes.get(0);
+            s1.name = "Escena 1";
+
+            Game.Node title = g.add("Label");
+            title.name = "Titulo1";
+            title.text = "Escena 1 - Toca el botón";
+            title.x = 120; title.y = 30; title.w = 400; title.h = 60; title.tsize = 26;
+
+            Game.Node anim1 = g.add("AnimatedSprite");
+            anim1.name = "Sprite1";
+            anim1.x = 272; anim1.y = 110; anim1.w = 96; anim1.h = 96;
+            anim1.fps = 4f; anim1.loop = true; anim1.autoplay = true;
+            anim1.frames.add("frame1.png");
+            anim1.frames.add("frame2.png");
+            anim1.frames.add("frame3.png");
+
+            Game.Node btn1 = g.add("Button");
+            btn1.name = "BotonIr";
+            btn1.text = "Ir a Escena 2";
+            btn1.x = 200; btn1.y = 240; btn1.w = 240; btn1.h = 70; btn1.tsize = 22;
+            Game.Blk press1 = new Game.Blk("press");
+            Game.Blk go2 = new Game.Blk("scene");
+            go2.f.put("scene", "Escena 2");
+            press1.body.add(go2);
+            btn1.script.add(press1);
+
+            Game.Scene s2 = g.addScene("Escena 2");
+            g.openScene(s2);
+
+            Game.Node title2 = g.add("Label");
+            title2.name = "Titulo2";
+            title2.text = "Escena 2 - Arrastra la caja";
+            title2.x = 120; title2.y = 20; title2.w = 400; title2.h = 50; title2.tsize = 24;
+
+            Game.Node anim2 = g.add("AnimatedSprite");
+            anim2.name = "Sprite2";
+            anim2.x = 60; anim2.y = 110; anim2.w = 96; anim2.h = 96;
+            anim2.fps = 6f; anim2.loop = true; anim2.autoplay = true;
+            anim2.frames.add("frame1.png");
+            anim2.frames.add("frame2.png");
+            anim2.frames.add("frame3.png");
+
+            Game.Node box = g.add("Image");
+            box.name = "CajaMovil";
+            box.res = "caja.png";
+            box.x = 300; box.y = 110; box.w = 100; box.h = 100;
+
+            Game.Node grab = g.add("Grab");
+            grab.name = "AgarreCaja";
+            grab.parent = box.id;
+            grab.x = 0; grab.y = 0; grab.w = 100; grab.h = 100;
+            grab.gmode = "arrastrar";
+
+            Game.Node btn2 = g.add("Button");
+            btn2.name = "BotonVolver";
+            btn2.text = "Volver a Escena 1";
+            btn2.x = 200; btn2.y = 250; btn2.w = 240; btn2.h = 70; btn2.tsize = 20;
+            Game.Blk press2 = new Game.Blk("press");
+            Game.Blk go1 = new Game.Blk("scene");
+            go1.f.put("scene", "Escena 1");
+            press2.body.add(go1);
+            btn2.script.add(press2);
+
+            g.openScene(s1);
+            writeText(new File(d, "game.json"), g.toJson());
+            open(d);
+        } catch (Exception e) {
+            Toast.makeText(this, "Error: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     void menu(final File p) {

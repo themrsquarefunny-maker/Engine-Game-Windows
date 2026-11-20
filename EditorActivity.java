@@ -45,6 +45,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
@@ -75,8 +76,8 @@ public class EditorActivity extends Activity {
     //        L lista de variables, E lista de valores de enum, O opciones, H destino de colisión
     static final String[][] SPEC = {
         {"start", "Al iniciar", "E"},
-        {"press", "Al presionar", "E"},
-        {"hold", "Al mantener presionado", "E"},
+        {"press", "Al presionar (clic izq. / toque)", "E"},
+        {"hold", "Al mantener presionado (clic izq. / toque)", "E"},
         {"recv", "Recibir mensaje", "E", "msg:Mensaje:M"},
         {"frame", "Cada fotograma", "E"},
         {"collision", "Al colisionar", "E", "node:Nodo con el que colisiona:H"},
@@ -120,17 +121,17 @@ public class EditorActivity extends Activity {
         {"save", "Guardar variables", "S", "names:Variables a guardar:L"},
         {"clearsave", "Borrar progreso guardado", "S"},
         {"scene", "Cambiar de escena", "S", "scene:Escena:C"},
-        {"orientset", "Cambiar orientación", "S", "mode:Orientación:O:horizontal|vertical"},
+        {"orientset", "Cambiar orientación (ventana en PC)", "S", "mode:Orientación:O:horizontal|vertical"},
         {"viewmode", "Usar viewport o cámara", "S", "mode:Modo:O:viewport|camera2D"},
         {"camset", "Configurar cámara", "S", "node:Cámara (Camera2D):G",
             "what:Qué cambia:O:zoom|seguir a|suavizado|activar", "val:Valor (nombre del nodo si es seguir a):V"},
         {"setimg", "Cambiar imagen", "S", "node:Nodo:G", "asset:Imagen:I"},
         {"setsnd", "Cambiar sonido", "S", "node:Nodo (Sound):G", "asset:Sonido:A"},
-        {"play", "Reproducir sonido, video o animación", "S", "node:Nodo:G:Sound|AnimatedSprite|Video",
+        {"play", "Reproducir sonido, animación o video", "S", "node:Nodo:G:Sound|AnimatedSprite|Video",
             "dir:Dirección de video o animación:O:normal|reversa", "restart:Reiniciar desde el extremo:B",
             "loop:Bucle:O:del nodo|activar|desactivar"},
-        {"stop", "Detener sonido, video o animación", "S", "node:Nodo:G:Sound|AnimatedSprite|Video"},
-        {"quit", "Cerrar juego (se cierra por completo)", "S"},
+        {"stop", "Detener sonido, animación o video", "S", "node:Nodo:G:Sound|AnimatedSprite|Video"},
+        {"quit", "Cerrar juego (cierra la ventana y guarda)", "S"},
         {"mod", "Modulate (alpha 0.0 a 1.0)", "S", "node:Nodo:G", "val:Valor decimal:N",
                 "touch:Permitir tocar aunque la transparencia sea máxima (alpha 0):B"},
         {"vis", "Visibilidad", "S", "node:Nodo:G", "val:Visible:O:true|false"},
@@ -373,7 +374,7 @@ public class EditorActivity extends Activity {
         bar.addView(btn("Ajustes", x -> settings()));
         bar.addView(btn("Assets", x -> assetsDialog()));
         bar.addView(btn("▶ Probar", x -> test(null)));
-        bar.addView(btn("Exportar APK", x -> exportDialog()));
+        bar.addView(btn("Exportar a Windows", x -> exportDialog()));
         bar.addView(btn("Guardar", x -> {
             save();
             toast("Guardado");
@@ -813,7 +814,7 @@ public class EditorActivity extends Activity {
             props.addView(label("Área invisible que detecta solapamientos sin bloquear el movimiento. "
                     + "Usa sus eventos de entrada, permanencia y salida, o elige 'Colisión entre nodos' en una condición."));
         } else if (n.type.equals("Grab")) {
-            props.addView(label("Área que se agarra con el dedo. Si es hijo de un objeto, lo agarra a él."));
+            props.addView(label("Área que se agarra con el dedo o clic izquierdo. Si es hijo de un objeto, lo agarra a él."));
             nodePicker("Objeto a agarrar (vacío = el padre de este nodo)", null, n.gtarget, s -> n.gtarget = s);
             props.addView(label("Al agarrar"));
             Spinner sm = spinner(new String[]{"arrastrar y soltar", "rotar jalando izquierda / derecha"});
@@ -1196,7 +1197,7 @@ public class EditorActivity extends Activity {
                     int n;
                     while ((n = i.read(buf)) > 0) o.write(buf, 0, n);
                 }
-                Toast.makeText(this, "APK guardado ✔ (" + (exported.length() / 1024) + " KB)", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "ZIP para Windows guardado ✔ (" + (exported.length() / 1024) + " KB)", Toast.LENGTH_LONG).show();
             } else if (req == 3 && d.getData() != null) {
                 makeIcon(d.getData());
                 if (tIconInfo != null) tIconInfo.setText("Ícono personalizado ✔");
@@ -1222,8 +1223,8 @@ public class EditorActivity extends Activity {
         final Spinner sv2 = spinner(new String[]{"Viewport (sin cámara)", "Camera2D"});
         sv2.setSelection(g.viewMode.equals("camera") ? 1 : 0);
         v.addView(sv2);
-        v.addView(label("Viewport horizontal (con el teclado o elige uno)"));
-        final String[] presets = {"Personalizado", "1280 x 720", "1920 x 1080", "640 x 360", "960 x 540"};
+        v.addView(label("Viewport horizontal (por defecto 640×360, máximo 1280×720)"));
+        final String[] presets = {"Personalizado", "640 x 360", "960 x 540", "1280 x 720"};
         final Spinner spr = spinner(presets);
         v.addView(spr);
         final EditText ew = new EditText(this);
@@ -1266,6 +1267,8 @@ public class EditorActivity extends Activity {
         v.addView(ec);
         final CheckBox ca = check(v, "Guardar variables automáticamente al cerrar el juego", g.autosave, s -> {
         });
+        final CheckBox clct = check(v, "Clic izquierdo simula toque (Windows)", g.leftClickTouch, s -> {
+        });
         ScrollView sc = new ScrollView(this);
         sc.addView(v);
         new AlertDialog.Builder(this).setTitle("Ajustes del proyecto").setView(sc)
@@ -1274,13 +1277,19 @@ public class EditorActivity extends Activity {
                     g.stretch = mi == 1 ? "stretch" : mi == 2 ? "fill" : "keep";
                     g.viewMode = sv2.getSelectedItemPosition() == 1 ? "camera" : "viewport";
                     g.autosave = ca.isChecked();
+                    g.leftClickTouch = clct.isChecked();
+                    boolean clamped = false;
                     try {
-                        g.vwL = Math.max(64, Math.min(8192, Integer.parseInt(ew.getText().toString().trim())));
-                        g.vhL = Math.max(64, Math.min(8192, Integer.parseInt(eh.getText().toString().trim())));
-                        g.vwP = Math.max(64, Math.min(8192, Integer.parseInt(pw.getText().toString().trim())));
-                        g.vhP = Math.max(64, Math.min(8192, Integer.parseInt(ph.getText().toString().trim())));
+                        int rwL = Integer.parseInt(ew.getText().toString().trim());
+                        int rhL = Integer.parseInt(eh.getText().toString().trim());
+                        if (rwL > 1280 || rhL > 720) clamped = true;
+                        g.vwL = Math.max(64, Math.min(1280, rwL));
+                        g.vhL = Math.max(64, Math.min(720, rhL));
+                        g.vwP = Math.max(64, Math.min(1280, Integer.parseInt(pw.getText().toString().trim())));
+                        g.vhP = Math.max(64, Math.min(1280, Integer.parseInt(ph.getText().toString().trim())));
                     } catch (Exception e) {
                     }
+                    if (clamped) toast("Viewport horizontal limitado al máximo de 1280×720");
                     try {
                         g.bg = 0xFF000000 | Integer.parseInt(ec.getText().toString().trim().replace("#", ""), 16);
                     } catch (Exception e) {
@@ -1303,7 +1312,7 @@ public class EditorActivity extends Activity {
         save();
         LinearLayout v = vbox();
         v.setPadding(dp(20), dp(10), dp(20), dp(10));
-        v.addView(label("Nombre de la app"));
+        v.addView(label("Nombre del juego (para el .exe y el .zip)"));
         final EditText en = new EditText(this);
         en.setText(exportName);
         v.addView(en);
@@ -1312,41 +1321,9 @@ public class EditorActivity extends Activity {
         ev.setText("1.0");
         ev.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(60)});
         v.addView(ev);
-        v.addView(label("Paquete: com.[marca].[juego]  (vacío = automático)"));
-        final android.content.SharedPreferences sp0 = getSharedPreferences("exp", 0);
-        LinearLayout pr = new LinearLayout(this);
-        final EditText eb = new EditText(this), ej = new EditText(this);
-        eb.setHint("marca");
-        ej.setHint("juego");
-        eb.setInputType(TXT);
-        ej.setInputType(TXT);
-        eb.setText(sp0.getString("marca", ""));
-        ej.setText(sp0.getString("juego", ""));
-        pr.addView(eb, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        pr.addView(ej, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        v.addView(pr);
-        final TextView pkv = new TextView(this);
-        v.addView(pkv);
-        final Runnable upd = () -> {
-            String k = makePkg(eb.getText().toString(), ej.getText().toString(), en.getText().toString());
-            pkv.setText("→ " + (k.isEmpty() ? "automático" : k));
-        };
-        TextWatcher tw = new TextWatcher() {
-            public void beforeTextChanged(CharSequence q, int a1, int c, int d) {
-            }
-
-            public void onTextChanged(CharSequence q, int a1, int c, int d) {
-            }
-
-            public void afterTextChanged(Editable q) {
-                upd.run();
-            }
-        };
-        eb.addTextChangedListener(tw);
-        ej.addTextChangedListener(tw);
-        en.addTextChangedListener(tw);
-        upd.run();
-        v.addView(label("Ícono de la app"));
+        final CheckBox clct = check(v, "Clic izquierdo simula toque", g.leftClickTouch, s -> {
+        });
+        v.addView(label("Ícono de la ventana"));
         tIconInfo = new TextView(this);
         tIconInfo.setText(iconFile.exists() ? "Ícono personalizado ✔" : "Ícono por defecto");
         v.addView(tIconInfo);
@@ -1360,49 +1337,50 @@ public class EditorActivity extends Activity {
             iconFile.delete();
             tIconInfo.setText("Ícono por defecto");
         }));
-        v.addView(label("Imágenes del APK"));
-        final Spinner si = spinner(new String[]{"Optimizar (WebP, más liviano)",
-            "Optimizar sin pérdida (pixel art)", "No tocar las imágenes"});
+        v.addView(label("Imágenes del paquete"));
+        final Spinner si = spinner(new String[]{"Optimizar (PNG/JPEG, más liviano)",
+            "Optimizar sin pérdida (PNG)", "No tocar las imágenes (convierte WebP a PNG)"});
         v.addView(si);
-        v.addView(label("Android: 7.0 (API 24) hasta la última versión (fijo)"));
+        v.addView(label("Destino: ZIP portátil para Windows x64 ("
+                + Exporter.safeExeBase(exportName) + ".exe, juego.pak y SDL3.dll)"));
         ScrollView sv = new ScrollView(this);
         sv.addView(v);
-        new AlertDialog.Builder(this).setTitle("Exportar APK").setView(sv)
+        new AlertDialog.Builder(this).setTitle("Exportar a Windows").setView(sv)
                 .setPositiveButton("Exportar", (d, w) -> {
                     String nm = en.getText().toString().trim();
                     String vr = ev.getText().toString().trim();
-                    if (nm.isEmpty()) nm = "Juego";
+                    if (nm.isEmpty()) nm = "MiJuego";
                     if (vr.isEmpty()) vr = "1.0";
-                    String pk = makePkg(eb.getText().toString(), ej.getText().toString(), nm);
-                    sp0.edit().putString("marca", eb.getText().toString().trim())
-                            .putString("juego", ej.getText().toString().trim()).apply();
-                    doExport(nm, vr, si.getSelectedItemPosition(), pk);
+                    g.leftClickTouch = clct.isChecked();
+                    save();
+                    final String finalNm = nm;
+                    final int imgMode = si.getSelectedItemPosition();
+                    List<String> warnings = WindowsCompat.check(g);
+                    if (!warnings.isEmpty()) {
+                        StringBuilder sb = new StringBuilder(
+                                "El proyecto usa funciones que Windows todavía no admite:\n\n");
+                        for (String warn : warnings) sb.append("• ").append(warn).append("\n");
+                        sb.append("\n¿Quieres exportar de todas formas o cancelar para corregirlo?");
+                        new AlertDialog.Builder(this)
+                                .setTitle("Funciones no admitidas en Windows")
+                                .setMessage(sb.toString())
+                                .setPositiveButton("Exportar de todas formas", (d2, w2) -> doExport(finalNm, imgMode))
+                                .setNegativeButton("Cancelar", null)
+                                .show();
+                    } else {
+                        doExport(finalNm, imgMode);
+                    }
                 }).setNegativeButton("Cancelar", null).show();
     }
 
-    static String seg(String t) {
-        t = java.text.Normalizer.normalize(t, java.text.Normalizer.Form.NFD).replaceAll("\\p{M}", "")
-                .toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_]", "");
-        if (!t.isEmpty() && !Character.isLetter(t.charAt(0))) t = "a" + t;
-        return t.length() > 30 ? t.substring(0, 30) : t;
-    }
-
-    // com.marca.juego (vacío = automático)
-    static String makePkg(String marca, String juego, String app) {
-        String m = seg(marca), j = seg(juego);
-        if (m.isEmpty() && j.isEmpty()) return "";
-        if (m.isEmpty()) m = "app";
-        if (j.isEmpty()) j = seg(app);
-        if (j.isEmpty()) j = "juego";
-        return "com." + m + "." + j;
-    }
-
-    void doExport(final String name, final String ver, final int imgMode, final String pkg) {
+    void doExport(final String name, final int imgMode) {
         exportName = name;
         final String json;
         final byte[] icon;
         try {
-            json = g.toJson();
+            org.json.JSONObject jo = new org.json.JSONObject(g.toJson());
+            jo.put("name", name);
+            json = jo.toString();
             icon = iconFile.exists() ? readBytes(iconFile) : null;
         } catch (Exception e) {
             toast("Error: " + e.getMessage());
@@ -1411,17 +1389,17 @@ public class EditorActivity extends Activity {
         final Set<String> used = g.usedAssets();
         final HashMap<String, float[]> sizes = g.imageSizes();
         final boolean noDown = g.hasSizeTween();
-        toast("Exportando…");
+        toast("Exportando para Windows…");
         new Thread(() -> {
             try {
-                File out = new File(getCacheDir(), "export.apk");
-                Exporter.build(this, json, adir, used, sizes, noDown, imgMode, icon, name, ver, pkg, out);
+                File out = new File(getCacheDir(), "export_windows.zip");
+                Exporter.buildWindows(this, json, adir, used, sizes, noDown, imgMode, icon, name, out);
                 exported = out;
                 runOnUiThread(() -> {
                     Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                     i.addCategory(Intent.CATEGORY_OPENABLE);
-                    i.setType("application/vnd.android.package-archive");
-                    i.putExtra(Intent.EXTRA_TITLE, name.replaceAll("[^A-Za-z0-9._-]", "_") + ".apk");
+                    i.setType("application/zip");
+                    i.putExtra(Intent.EXTRA_TITLE, Exporter.safeExeBase(name) + ".zip");
                     startActivityForResult(i, 2);
                 });
             } catch (Throwable e) {
@@ -2375,14 +2353,14 @@ public class EditorActivity extends Activity {
     }
 
     void touchMenu(final EditText ex, final Runnable back) {
-        final String[] it = {"Al pasar dedo  ▸", "Mantener pulsado"};
-        new AlertDialog.Builder(this).setTitle("Tocar").setItems(it, (d, i) -> {
+        final String[] it = {"Al pasar dedo / puntero  ▸", "Mantener pulsado (clic izq. o toque)"};
+        new AlertDialog.Builder(this).setTitle("Tocar / Clic").setItems(it, (d, i) -> {
             if (i == 1) {
                 ins(ex, "pulsado", true);
                 return;
             }
-            final String[] f = {"Dedo dentro del botón", "Dedo fuera"};
-            new AlertDialog.Builder(this).setTitle("Al pasar dedo").setItems(f,
+            final String[] f = {"Dedo / puntero dentro", "Dedo / puntero fuera"};
+            new AlertDialog.Builder(this).setTitle("Al pasar dedo / puntero").setItems(f,
                     (d2, k) -> ins(ex, k == 0 ? "dedo_dentro" : "dedo_fuera", true))
                     .setNegativeButton("Atrás", (d2, w) -> touchMenu(ex, back)).show();
         }).setNegativeButton("Atrás", (d, w) -> back.run()).show();

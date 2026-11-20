@@ -417,9 +417,9 @@ public class Game {
     public Scene curScene;
     public ArrayList<Node> nodes = new ArrayList<Node>();
     public ArrayList<Node> order = new ArrayList<Node>();
-    public boolean landscape = true, autosave = true;
+    public boolean landscape = true, autosave = true, leftClickTouch = true;
     public String stretch = "keep", viewMode = "viewport";
-    public int vw = 1280, vh = 720, vwL = 1280, vhL = 720, vwP = 720, vhP = 1280;
+    public int vw = 640, vh = 360, vwL = 640, vhL = 360, vwP = 360, vhP = 640;
     public int bg = 0xFF202020, nextId = 1, nextSceneId = 1, startId = 1;
     public Src src;
     public Store store;
@@ -517,6 +517,7 @@ public class Game {
         o.put("vhP", vhP);
         o.put("bg", bg);
         o.put("asave", autosave);
+        o.put("lct", leftClickTouch);
         o.put("next", nextId);
         o.put("nextScene", nextSceneId);
         o.put("start", startId);
@@ -564,14 +565,15 @@ public class Game {
         g.stretch = o.optString("st", "keep");
         g.viewMode = o.optString("vm", "viewport");
         g.autosave = o.optBoolean("asave", true);
+        g.leftClickTouch = o.optBoolean("lct", true);
         g.bg = o.optInt("bg", 0xFF202020);
         if (o.has("vwL")) {
-            g.vwL = Math.max(16, o.optInt("vwL", 1280));
-            g.vhL = Math.max(16, o.optInt("vhL", 720));
-            g.vwP = Math.max(16, o.optInt("vwP", 720));
-            g.vhP = Math.max(16, o.optInt("vhP", 1280));
+            g.vwL = Math.max(16, o.optInt("vwL", 640));
+            g.vhL = Math.max(16, o.optInt("vhL", 360));
+            g.vwP = Math.max(16, o.optInt("vwP", 360));
+            g.vhP = Math.max(16, o.optInt("vhP", 640));
         } else {
-            int w = Math.max(16, o.optInt("vw", 1280)), h = Math.max(16, o.optInt("vh", 720));
+            int w = Math.max(16, o.optInt("vw", 640)), h = Math.max(16, o.optInt("vh", 360));
             if (g.landscape) {
                 g.vwL = w;
                 g.vhL = h;
