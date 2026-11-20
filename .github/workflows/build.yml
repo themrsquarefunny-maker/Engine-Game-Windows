@@ -1,4 +1,4 @@
-name: Build APK v9 fix 3
+name: Build APK v10
 on:
   push:
     tags: ['v*']
@@ -52,11 +52,11 @@ jobs:
           ls -l motor-v4.apk tpl.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: motor-apk-v4
+          name: motor-apk-v10
           path: motor-v4.apk
       - name: Publicar release (solo con tag vX)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: motor-v9.apk
+          files: motor-v10.apk
           
