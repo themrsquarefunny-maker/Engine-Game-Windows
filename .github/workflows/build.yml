@@ -1,4 +1,4 @@
-name: Motor APK — última versión v11
+name: Motor Windows — Editor APK + Reproductor Windows x64
 on:
   push:
     tags: ['v*']
@@ -15,50 +15,86 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Compilar plantilla y editor
+      - name: Instalar herramientas de compilación Windows x64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 cmake ninja-build
+      - name: Descargar SDL3 3.4.20
+        run: |
+          mkdir -p /tmp/sdl3
+          curl -sL https://codeload.github.com/libsdl-org/SDL/tar.gz/refs/tags/release-3.4.20 -o /tmp/sdl3/sdl3.tar.gz
+          tar -xzf /tmp/sdl3/sdl3.tar.gz -C /tmp/sdl3
+      - name: Compilar y probar reproductor C++ (Linux headless)
+        run: |
+          cmake -S /tmp/sdl3/SDL-release-3.4.20 -B /tmp/sdl3/build_linux -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
+            -DSDL_UNIX_CONSOLE_BUILD=ON \
+            -DCMAKE_INSTALL_PREFIX=/tmp/sdl3/install_linux
+          cmake --build /tmp/sdl3/build_linux -j$(nproc)
+          cmake --install /tmp/sdl3/build_linux
+          cmake -S winplayer -B /tmp/winplayer_linux -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_PLAYER_TESTS=ON \
+            -DCMAKE_PREFIX_PATH=/tmp/sdl3/install_linux
+          cmake --build /tmp/winplayer_linux -j$(nproc)
+          SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy /tmp/winplayer_linux/player_tests
+      - name: Compilar reproductor Windows x64 una sola vez (player.exe + SDL3.dll)
+        run: |
+          cat << 'EOF' > /tmp/mingw-w64-x86_64.cmake
+          set(CMAKE_SYSTEM_NAME Windows)
+          set(CMAKE_SYSTEM_PROCESSOR x86_64)
+          set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)
+          set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)
+          set(CMAKE_RC_COMPILER x86_64-w64-mingw32-windres)
+          set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)
+          EOF
+          cmake -S /tmp/sdl3/SDL-release-3.4.20 -B /tmp/sdl3/build_win64 -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=/tmp/mingw-w64-x86_64.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_PREFIX=/tmp/sdl3/install_win64
+          cmake --build /tmp/sdl3/build_win64 -j$(nproc)
+          cmake --install /tmp/sdl3/build_win64
+          cmake -S winplayer -B /tmp/winplayer_win64 -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=/tmp/mingw-w64-x86_64.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/tmp/sdl3/install_win64
+          cmake --build /tmp/winplayer_win64 -j$(nproc)
+          mkdir -p /tmp/win_bundle pack/assets
+          cp /tmp/winplayer_win64/player.exe /tmp/win_bundle/player.exe
+          cp /tmp/sdl3/install_win64/bin/SDL3.dll /tmp/win_bundle/SDL3.dll
+          x86_64-w64-mingw32-strip /tmp/win_bundle/player.exe /tmp/win_bundle/SDL3.dll
+          (cd /tmp/win_bundle && zip -9 -j "$GITHUB_WORKSPACE/pack/assets/win_player.zip" player.exe SDL3.dll)
+          ls -lh pack/assets/win_player.zip
+      - name: Compilar Editor APK (con win_player.zip embebido)
         run: |
           set -e
           BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
           PL=$(ls -d $ANDROID_HOME/platforms/android-* | sort -V | tail -1)/android.jar
-          mkdir -p tobj tout eobj eout pack/assets apksig res/mipmap-xxxhdpi
-
-          python3 -c "
-          import zlib,struct
-          w=h=192
-          raw=b''.join(b'\x00'+bytes([40,120,220,255])*w for _ in range(h))
-          def ch(t,d): return struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d)&0xffffffff)
-          png=b'\x89PNG\r\n\x1a\n'+ch(b'IHDR',struct.pack('>IIBBBBB',w,h,8,6,0,0,0))+ch(b'IDAT',zlib.compress(raw,9))+ch(b'IEND',b'')
-          open('res/mipmap-xxxhdpi/ic.png','wb').write(png)
-          "
-          $BT/aapt2 compile --dir res -o res.zip
-
-          # 1) Plantilla del juego (incluye VideoLayer)
-          $BT/aapt2 link -o tpl.apk -I $PL --manifest PlayerManifest.xml --min-sdk-version 24 --target-sdk-version 28 res.zip
-          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL -d tobj Game.java GameView.java PlayActivity.java VideoLayer.java
-          $BT/d8 --release --min-api 24 --lib $PL --output tout $(find tobj -name '*.class')
-          zip -j tpl.apk tout/classes.dex
-          cp tpl.apk pack/assets/template.apk
-
-          # 2) Editor
-          unzip -q $BT/lib/apksigner.jar 'com/android/apksig/*' -d apksig
+          mkdir -p eobj eout pack/assets
           $BT/aapt2 link -o base.apk -I $PL --manifest AndroidManifest.xml --min-sdk-version 26 --target-sdk-version 33
-          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL:apksig -d eobj Game.java GameView.java PlayActivity.java VideoLayer.java EditorActivity.java ProjectsActivity.java Exporter.java Sign.java
-          $BT/d8 --release --min-api 26 --lib $PL --output eout $(find eobj apksig -name '*.class')
+          javac -encoding UTF-8 -source 8 -target 8 -classpath $PL -d eobj \
+            Game.java GameView.java PlayActivity.java VideoLayer.java \
+            EditorActivity.java ProjectsActivity.java Exporter.java WindowsCompat.java
+          $BT/d8 --release --min-api 26 --lib $PL --output eout $(find eobj -name '*.class')
           zip -j base.apk eout/classes.dex
           (cd pack && zip -r ../base.apk assets)
           $BT/zipalign -f 4 base.apk aligned.apk
           keytool -genkeypair -keystore k.jks -alias a -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=Motor"
           $BT/apksigner sign --ks k.jks --ks-pass pass:123456 --out motor-v11.apk aligned.apk
-          ls -l motor-v11.apk tpl.apk
+          ls -lh motor-v11.apk pack/assets/win_player.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: motor-apk-v11
-          path: motor-v11.apk
+          name: motor-editor-windows-v11
+          path: |
+            motor-v11.apk
+            pack/assets/win_player.zip
       - name: Publicar release (solo con tag vX)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: Motor v11 — Última versión
+          name: Motor v11 — Editor Android + Exportar a Windows
           make_latest: true
           body_path: RELEASE-v11.md
           fail_on_unmatched_files: true
