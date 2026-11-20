@@ -1,0 +1,9 @@
+# Motor v11
+
+- **Edición visual:** el selector **Editar** activa Movimiento, Tamaño o Rotación para todos los nodos. En Tamaño se muestran los tiradores; en Rotación se marca el pivote. El recorte de imágenes ahora también ajusta la selección y las medidas sin mover el contenido visible.
+- **Autoload:** script global desde la barra del editor. Sus bloques **Al iniciar** corren una sola vez y antes de los de la primera escena. Sus funciones y variables de nodo se conservan al cambiar de escena; las tareas pendientes se descartan, igual que en los scripts de escena.
+- **Convertir nodo en escena:** copia o mueve un nodo y sus descendientes a una escena nueva. Los recursos se reutilizan. Los nodos externos y las referencias que apuntan a ellos no se trasladan.
+- **Clonar visualización de nodo:** crea una copia dibujada, no un nodo interactivo. **Compartir cambios visuales** hace que siga la posición, rotación, animación, apariencia y visibilidad del original con el desplazamiento indicado. Sin compartir, captura una pose fija. Las copias reutilizan los recursos, se descartan al salir de la escena y pueden quitarse con un bloque. No se crean copias visuales de video.
+- **Reproducir:** añade dirección, reinicio y control de bucle. La animación puede recorrer sus fotogramas al revés. El video en reversa no tiene audio y solicita como máximo 12 cuadros por segundo; en Android 7 la precisión depende de los fotogramas clave del archivo.
+- **Cambio progresivo:** añade transición lineal, entrada/salida suave y salida suave.
+- **Correcciones:** los comandos de video respetan la pausa al volver a mostrar un nodo y conservan las búsquedas solicitadas mientras se prepara. Los cambios de escena limpian el estado anterior de los toques. La publicación adjunta el mismo APK que se genera: `motor-v11.apk`.

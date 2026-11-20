@@ -4,13 +4,12 @@ import android.content.Context;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
 import android.media.MediaPlayer;
+import android.os.Build;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.widget.FrameLayout;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Map;
 
 // Capa que reproduce los nodos Video (mp4, webm VP8/VP9, mkv) encima del juego.
 // No consume toques: pasan al GameView que está debajo.
@@ -21,12 +20,17 @@ public class VideoLayer extends FrameLayout implements Game.Layer {
         MediaPlayer mp;
         Surface sf;
         String res = "";
-        boolean ready, wantPlay, hidden, resume;
+        boolean ready, wantPlay, hidden, backwards, seeking, loopApplied;
+        float volumeApplied = -1f;
+        float reverseMs, reverseWait;
+        int nextSeek = -1; // -2 solicita el último cuadro; la duración llega al preparar.
     }
 
     final HashMap<Game.Node, H> map = new HashMap<Game.Node, H>();
     final RectF r = new RectF();
     boolean paused;
+    int sceneSerial = -1;
+    static final float REVERSE_INTERVAL = 1f / 12f;
 
     public VideoLayer(Context c) {
         super(c);
@@ -36,10 +40,11 @@ public class VideoLayer extends FrameLayout implements Game.Layer {
 
     @Override
     public void sync(Game g) {
-        // Quitar los que ya no existen (cambio de escena)
-        ArrayList<Game.Node> gone = new ArrayList<Game.Node>();
-        for (Game.Node n : map.keySet()) if (!g.nodes.contains(n)) gone.add(n);
-        for (Game.Node n : gone) drop(map.remove(n));
+        if (sceneSerial != g.sceneSerial) {
+            releaseAll();
+            sceneSerial = g.sceneSerial;
+        }
+        if (!g.hasVideo) return;
 
         for (int i = 0; i < g.nodes.size(); i++) {
             Game.Node n = g.nodes.get(i);
@@ -54,6 +59,7 @@ public class VideoLayer extends FrameLayout implements Game.Layer {
             }
             command(h, g);
             place(h, g);
+            stepReverse(h, g.curDt);
         }
     }
 
@@ -68,6 +74,7 @@ public class VideoLayer extends FrameLayout implements Game.Layer {
                 h.sf = new Surface(st);
                 try {
                     if (h.mp != null) h.mp.setSurface(h.sf);
+                    tryStart(h);
                 } catch (Exception e) {
                 }
             }
@@ -76,6 +83,7 @@ public class VideoLayer extends FrameLayout implements Game.Layer {
             }
 
             public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
+                pausePlayer(h);
                 try {
                     if (h.mp != null) h.mp.setSurface(null);
                 } catch (Exception e) {
@@ -102,15 +110,27 @@ public class VideoLayer extends FrameLayout implements Game.Layer {
             mp.setDataSource(g.src.file(h.res).getPath());
             if (h.sf != null) mp.setSurface(h.sf);
             mp.setOnPreparedListener(p -> {
+                if (p != h.mp) return;
                 h.ready = true;
+                applyOptions(h);
+                flushSeek(h);
+                tryStart(h);
+            });
+            mp.setOnSeekCompleteListener(p -> {
+                if (p != h.mp) return;
+                h.seeking = false;
+                flushSeek(h);
                 tryStart(h);
             });
             mp.setOnCompletionListener(p -> {
-                if (!h.n.loop) h.n.vdone = true;
+                if (p == h.mp && !h.n.loop && !h.backwards) {
+                    h.wantPlay = false;
+                    h.n.vdone = true;
+                }
             });
             mp.setOnErrorListener((p, what, extra) -> {
                 // Formato no soportado en este equipo
-                h.ready = false;
+                if (p == h.mp) closePlayer(h);
                 return true;
             });
             mp.prepareAsync();
@@ -120,73 +140,114 @@ public class VideoLayer extends FrameLayout implements Game.Layer {
     }
 
     void tryStart(H h) {
-        if (h.mp == null || !h.ready || !h.wantPlay || paused || h.hidden) return;
+        if (!h.ready || h.seeking || !h.wantPlay || h.backwards || paused || h.hidden || h.sf == null) return;
         try {
-            h.mp.start();
-            h.wantPlay = false;
-        } catch (Exception e) {
+            if (!h.mp.isPlaying()) h.mp.start();
+        } catch (Exception ignored) { }
+    }
+
+    void pausePlayer(H h) {
+        try {
+            if (h.ready && h.mp.isPlaying()) h.mp.pause();
+        } catch (Exception ignored) { }
+    }
+
+    void applyOptions(H h) {
+        if (!h.ready) return;
+        try {
+            boolean loop = !h.backwards && h.n.loop;
+            if (loop != h.loopApplied) {
+                h.mp.setLooping(loop);
+                h.loopApplied = loop;
+            }
+            if (h.n.vol != h.volumeApplied) {
+                h.mp.setVolume(h.n.vol, h.n.vol);
+                h.volumeApplied = h.n.vol;
+            }
+        } catch (Exception ignored) { }
+    }
+
+    void flushSeek(H h) {
+        if (!h.ready || h.seeking || h.nextSeek == -1) return;
+        try {
+            int duration = h.mp.getDuration();
+            int end = Math.max(0, duration - 1);
+            int when = h.nextSeek == -2 ? end : Math.min(h.nextSeek, end);
+            h.nextSeek = -1;
+            h.reverseMs = when;
+            h.seeking = true;
+            if (Build.VERSION.SDK_INT >= 26) h.mp.seekTo(when, MediaPlayer.SEEK_CLOSEST);
+            else h.mp.seekTo(when);
+        } catch (Exception ignored) {
+            h.nextSeek = -1;
+            h.seeking = false;
         }
+    }
+
+    void stepReverse(H h, float dt) {
+        if (!h.backwards || !h.wantPlay || !h.ready || h.hidden || paused || h.sf == null) return;
+        h.reverseWait -= dt;
+        // Nunca se apilan búsquedas: se deja terminar la anterior antes de pedir otro cuadro.
+        if (h.seeking || h.reverseWait > 0f) return;
+        if (h.reverseMs <= 0f) {
+            if (!h.n.loop) {
+                h.wantPlay = false;
+                h.n.vdone = true;
+                return;
+            }
+            h.nextSeek = -2;
+        } else {
+            h.nextSeek = Math.max(0, Math.round(h.reverseMs - REVERSE_INTERVAL * 1000f));
+        }
+        h.reverseWait = REVERSE_INTERVAL;
+        flushSeek(h);
     }
 
     void command(H h, Game g) {
         Game.Node n = h.n;
-        if (!n.res.equals(h.res) && !"reload".equals(n.vcmd)) n.vcmd = "reload";
-        String c = n.vcmd;
-        if (c != null && !c.isEmpty()) {
-            n.vcmd = "";
-            try {
-                if (c.equals("reload")) {
-                    h.res = n.res;
-                    h.wantPlay = n.autoplay;
-                    open(h, g);
-                } else if (c.equals("play")) {
-                    h.wantPlay = true;
-                    tryStart(h);
-                } else if (c.equals("pause")) {
-                    h.wantPlay = false;
-                    if (h.ready) h.mp.pause();
-                } else if (c.equals("stop")) {
-                    h.wantPlay = false;
-                    if (h.ready) {
-                        h.mp.pause();
-                        h.mp.seekTo(0);
+        String cmd = n.vcmd;
+        n.vcmd = "";
+        if (!n.res.equals(h.res) || cmd.equals("reload")) {
+            h.res = n.res;
+            h.wantPlay = n.autoplay;
+            h.backwards = false;
+            open(h, g);
+        }
+        switch (cmd) {
+            case "play": case "restart": {
+                boolean changed = h.backwards != n.backwards;
+                h.backwards = n.backwards;
+                h.wantPlay = true;
+                if (h.backwards) {
+                    pausePlayer(h);
+                    if (changed || cmd.equals("restart") || h.reverseMs <= 0f) {
+                        h.nextSeek = -2;
+                        h.reverseWait = REVERSE_INTERVAL;
                     }
-                } else if (c.equals("seek")) {
-                    if (h.ready) h.mp.seekTo((int) (Math.max(0f, n.vseek) * 1000f));
-                }
-            } catch (Exception e) {
+                } else if (cmd.equals("restart")) h.nextSeek = 0;
+                break;
             }
+            case "pause": case "stop":
+                h.wantPlay = false;
+                pausePlayer(h);
+                if (cmd.equals("stop")) h.nextSeek = 0;
+                break;
+            default: break;
         }
-        if (h.mp != null && h.ready) {
-            try {
-                h.mp.setLooping(n.loop);
-                h.mp.setVolume(n.vol, n.vol);
-            } catch (Exception e) {
-            }
-        }
+        if (n.vseek >= 0f) h.nextSeek = (int) (n.vseek * 1000f);
+        n.vseek = -1f;
+        applyOptions(h);
+        flushSeek(h);
+        if (cmd.equals("play") || cmd.equals("restart")) tryStart(h);
     }
 
     void place(H h, Game g) {
         Game.Node n = h.n;
         boolean show = n.wvis && n.wa > 0.003f && !paused;
-        // Si el nodo se oculta, el video se pausa y se reanuda al volver a verse
-        if (!show && !h.hidden) {
-            h.hidden = true;
-            try {
-                if (h.mp != null && h.ready && h.mp.isPlaying()) {
-                    h.mp.pause();
-                    h.resume = true;
-                }
-            } catch (Exception e) {
-            }
-        } else if (show && h.hidden) {
-            h.hidden = false;
-            try {
-                if (h.resume && h.mp != null && h.ready) h.mp.start();
-            } catch (Exception e) {
-            }
-            h.resume = false;
-            tryStart(h);
+        if (show == h.hidden) {
+            h.hidden = !show;
+            if (show) tryStart(h);
+            else pausePlayer(h);
         }
         h.tv.setVisibility(show ? View.VISIBLE : View.INVISIBLE);
         if (!show) return;
@@ -213,7 +274,10 @@ public class VideoLayer extends FrameLayout implements Game.Layer {
             }
             h.mp = null;
         }
-        h.ready = false;
+        h.ready = h.seeking = h.loopApplied = false;
+        h.volumeApplied = -1f;
+        h.nextSeek = -1;
+        h.reverseMs = h.reverseWait = 0f;
     }
 
     void drop(H h) {
@@ -224,28 +288,14 @@ public class VideoLayer extends FrameLayout implements Game.Layer {
 
     public void pauseAll() {
         paused = true;
-        for (Map.Entry<Game.Node, H> e : map.entrySet()) {
-            H h = e.getValue();
-            try {
-                if (h.mp != null && h.ready && h.mp.isPlaying()) {
-                    h.mp.pause();
-                    h.resume = true;
-                }
-            } catch (Exception ex) {
-            }
+        for (H h : map.values()) {
+            h.hidden = true;
+            pausePlayer(h);
         }
     }
 
     public void resumeAll() {
         paused = false;
-        for (Map.Entry<Game.Node, H> e : map.entrySet()) {
-            H h = e.getValue();
-            try {
-                if (h.resume && h.mp != null && h.ready && !h.hidden) h.mp.start();
-            } catch (Exception ex) {
-            }
-            h.resume = false;
-        }
     }
 
     public void releaseAll() {

@@ -63,7 +63,7 @@ public class GameView extends View {
         float vx = g.toVx(e.getX()), vy = g.toVy(e.getY());
         if (a == MotionEvent.ACTION_DOWN) {
             rh = -1;
-            if (g.sel != null && g.sel.inOrder) {
+            if (g.editMode == Game.EDIT_SIZE && g.sel != null && g.sel.inOrder) {
                 rh = g.handleAt(g.sel, vx, vy, 26f * dens / Math.max(0.1f, g.sx));
             }
             if (rh >= 0) {
@@ -81,8 +81,7 @@ public class GameView extends View {
                 if (rh >= 0) {
                     g.resizeBy(drag, rh, vx - lx, vy - ly);
                 } else {
-                    drag.x += vx - lx;
-                    drag.y += vy - ly;
+                    g.dragEdit(drag, lx, ly, vx, vy);
                 }
                 lx = vx;
                 ly = vy;
