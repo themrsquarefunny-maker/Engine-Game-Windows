@@ -126,8 +126,10 @@ public class EditorActivity extends Activity {
             "what:Qué cambia:O:zoom|seguir a|suavizado|activar", "val:Valor (nombre del nodo si es seguir a):V"},
         {"setimg", "Cambiar imagen", "S", "node:Nodo:G", "asset:Imagen:I"},
         {"setsnd", "Cambiar sonido", "S", "node:Nodo (Sound):G", "asset:Sonido:A"},
-        {"play", "Reproducir sonido o animación", "S", "node:Nodo:G"},
-        {"stop", "Detener sonido o animación", "S", "node:Nodo:G"},
+        {"play", "Reproducir sonido, video o animación", "S", "node:Nodo:G:Sound|AnimatedSprite|Video",
+            "dir:Dirección de video o animación:O:normal|reversa", "restart:Reiniciar desde el extremo:B",
+            "loop:Bucle:O:del nodo|activar|desactivar"},
+        {"stop", "Detener sonido, video o animación", "S", "node:Nodo:G:Sound|AnimatedSprite|Video"},
         {"quit", "Cerrar juego (se cierra por completo)", "S"},
         {"mod", "Modulate (alpha 0.0 a 1.0)", "S", "node:Nodo:G", "val:Valor decimal:N",
                 "touch:Permitir tocar aunque la transparencia sea máxima (alpha 0):B"},
@@ -135,6 +137,9 @@ public class EditorActivity extends Activity {
         {"pos", "Mover a (vacío = no cambia)", "S", "node:Nodo:G", "x:X:V", "y:Y:V"},
         {"clone", "Clonar nodo", "S", "node:Nodo a clonar:G", "name:Nombre de la copia (opcional):T",
             "x:X (vacío = igual al original):V", "y:Y (vacío = igual al original):V"},
+        {"visualClone", "Clonar visualización de nodo", "S", "node:Nodo visual:G:Image|Button|ImageButton|Label|Color|AnimatedSprite",
+            "x:Desplazamiento X:V", "y:Desplazamiento Y:V", "share:Compartir cambios visuales del original:B"},
+        {"clearVisualClones", "Quitar copias visuales", "S", "node:Nodo original:G:Image|Button|ImageButton|Label|Color|AnimatedSprite"},
         {"advance", "Avanzar píxeles", "S", "node:Nodo:G", "dir:Dirección:O:derecha|izquierda|arriba|abajo|ángulo",
             "ang:Ángulo en grados (solo 'ángulo': 0 = derecha, 90 = abajo):V", "dist:Píxeles a avanzar:V",
             "secs:Segundos (0 = al instante):V", "edge:No salir de los bordes:B",
@@ -143,7 +148,7 @@ public class EditorActivity extends Activity {
             "secs:Segundos (0 = al instante):V"},
         {"stoprender", "Dejar de renderizar", "S", "node:Nodo:G"},
         {"startrender", "Renderizar de nuevo", "S", "node:Nodo:G"},
-        {"collisionEnable", "Activar o desactivar colisión", "S", "node:Nodo (Collision):G", "enabled:Colisión:O:true|false"},
+        {"collisionEnable", "Activar o desactivar colisión", "S", "node:Nodo (Collision):G:Collision", "enabled:Colisión:O:true|false"},
         {"speed", "Velocidad (inicial → final)", "S", "node:Nodo:G", "dir:Dirección:O:derecha|izquierda|arriba|abajo|ángulo",
             "ang:Ángulo en grados (solo 'ángulo'):V", "v0:Velocidad inicial (píxeles por segundo):V",
             "v1:Velocidad final (píxeles por segundo):V", "ramp:Segundos para pasar de la inicial a la final:V",
@@ -153,12 +158,12 @@ public class EditorActivity extends Activity {
         {"text", "Cambiar texto", "S", "node:Nodo (Button):G", "val:Texto:V"},
         {"tween", "Cambio progresivo", "S", "node:Nodo:G", "what:Qué cambia:O:modulate|mover|tamaño|rotación",
             "x:Valor, X o ángulo final en grados:V", "y:Y (mover o tamaño):V", "secs:Segundos:N",
-                "touch:Permitir tocar aunque la transparencia sea máxima (solo modulate):B"},
+            "ease:Curva de cambio:O:lineal|entrada/salida|salida suave", "touch:Permitir tocar aunque la transparencia sea máxima (solo modulate):B"},
         {"vend", "Al terminar el video", "E"},
-        {"vpause", "Pausar video", "S", "node:Nodo (Video):G"},
-        {"vseek", "Ir a un segundo del video", "S", "node:Nodo (Video):G", "secs:Segundos:V"},
-        {"vvol", "Volumen del video (0.0 a 1.0)", "S", "node:Nodo (Video):G", "val:Volumen:V"},
-        {"setvideo", "Cambiar video", "S", "node:Nodo (Video):G", "asset:Video (mp4, webm, mkv):W"},
+        {"vpause", "Pausar video", "S", "node:Nodo (Video):G:Video"},
+        {"vseek", "Ir a un segundo del video", "S", "node:Nodo (Video):G:Video", "secs:Segundos:V"},
+        {"vvol", "Volumen del video (0.0 a 1.0)", "S", "node:Nodo (Video):G:Video", "val:Volumen:V"},
+        {"setvideo", "Cambiar video", "S", "node:Nodo (Video):G:Video", "asset:Video (mp4, webm, mkv):W"},
     };
 
     Game g;
@@ -329,6 +334,8 @@ public class EditorActivity extends Activity {
         LinearLayout root = vbox();
         root.setBackgroundColor(0xFF121212);
         pv = new GameView(this, g, true);
+        g.editMode = Math.max(Game.EDIT_MOVE, Math.min(Game.EDIT_ROTATE,
+                getPreferences(MODE_PRIVATE).getInt("herramienta", Game.EDIT_MOVE)));
         pv.l = new GameView.L() {
             public void sel(Game.Node n) {
                 select(n);
@@ -351,6 +358,18 @@ public class EditorActivity extends Activity {
         hs.addView(bar);
         bar.addView(btn("＋ Nodo", x -> addNode()));
         bar.addView(btn("Escenas", x -> scenesDialog()));
+        bar.addView(btn("Autoload", x -> openScript(g.autoload)));
+        final String[] tools = {"Movimiento", "Tamaño", "Rotación"};
+        bar.addView(btn("Editar: " + tools[g.editMode], x -> new AlertDialog.Builder(this)
+                .setTitle("Herramienta de edición visual").setSingleChoiceItems(tools, g.editMode, (d, which) -> {
+                    g.editMode = which;
+                    getPreferences(MODE_PRIVATE).edit().putInt("herramienta", which).apply();
+                    ((Button) x).setText("Editar: " + tools[which]);
+                    if (which == Game.EDIT_SIZE) toast("Selecciona el nodo y arrastra sus tiradores");
+                    else if (which == Game.EDIT_ROTATE) toast("Arrastra el nodo alrededor del pivote marcado");
+                    pv.invalidate();
+                    d.dismiss();
+                }).setNegativeButton("Cancelar", null).show()));
         bar.addView(btn("Ajustes", x -> settings()));
         bar.addView(btn("Assets", x -> assetsDialog()));
         bar.addView(btn("▶ Probar", x -> test(null)));
@@ -615,17 +634,28 @@ public class EditorActivity extends Activity {
             for (Game.Node q : g.nodes) if (q.parent == n.id) showGeo = true;
             if (!showGeo) props.addView(label("Nodo invisible. La posición y el tamaño solo se usan si este nodo es padre de otros."));
         }
-        if (showGeo) field(props, "Posición X", trimf(n.x), NUM, s -> n.x = pf(s, n.x));
-        if (showGeo) field(props, "Posición Y", trimf(n.y), NUM, s -> n.y = pf(s, n.y));
-        boolean showSize = showGeo && !n.type.equals("Sound");
-        if (showSize) field(props, "Ancho", trimf(n.w), NUM, s -> {
-            n.w = Math.max(1f, pf(s, n.w));
-            if (fitBox[0] != null && fitBox[0].isChecked()) fitBox[0].setChecked(false);
-        });
-        if (showSize) field(props, "Alto", trimf(n.h), NUM, s -> {
-            n.h = Math.max(1f, pf(s, n.h));
-            if (fitBox[0] != null && fitBox[0].isChecked()) fitBox[0].setChecked(false);
-        });
+        RectF shown = new RectF();
+        g.editBounds(n, n.x, n.y, shown);
+        if (showGeo && !shown.isEmpty()) {
+            field(props, "Posición X", trimf(shown.left), NUM, s -> g.setEditPosition(n, true, pf(s, Float.NaN)));
+            field(props, "Posición Y", trimf(shown.top), NUM, s -> g.setEditPosition(n, false, pf(s, Float.NaN)));
+            if (!n.type.equals("Sound")) {
+                field(props, "Ancho", trimf(shown.width()), NUM, s -> {
+                    float value = pf(s, Float.NaN);
+                    if (!Float.isFinite(value)) return;
+                    g.setEditSize(n, true, value);
+                    if (fitBox[0] != null && fitBox[0].isChecked()) fitBox[0].setChecked(false);
+                });
+                field(props, "Alto", trimf(shown.height()), NUM, s -> {
+                    float value = pf(s, Float.NaN);
+                    if (!Float.isFinite(value)) return;
+                    g.setEditSize(n, false, value);
+                    if (fitBox[0] != null && fitBox[0].isChecked()) fitBox[0].setChecked(false);
+                });
+            }
+        } else if (n.trimTransparent && shown.isEmpty()) {
+            props.addView(label("La imagen es totalmente transparente: desactiva el recorte para editar su caja."));
+        }
 
         if (!n.type.equals("Sound") && !n.type.equals("Camera2D") && !n.type.equals("Anchor")) {
             field(props, "Rotación (grados, positivo = horario)", trimf(n.rot), NUM, s -> n.rot = pf(s, n.rot));
@@ -644,8 +674,10 @@ public class EditorActivity extends Activity {
                 check(props, "Recortar bordes transparentes", n.trimTransparent, s -> {
                     n.trimTransparent = s.equals("true");
                     pv.invalidate();
+                    props.post(() -> rebuildProps());
                 });
-                props.addView(label("Solo recorta el dibujo: conserva la posición visible, el pivote y la caja del nodo."));
+                props.addView(label("Ajusta la selección, los tiradores y las medidas a lo visible sin mover la imagen. "
+                        + "Desactívalo para volver a editar la caja completa."));
             }
             props.addView(btn("Elegir imagen", x -> chooseAsset(true, s -> {
                 n.res = s;
@@ -815,6 +847,12 @@ public class EditorActivity extends Activity {
         props.addView(lr);
         props.addView(title("Lógica"));
         props.addView(btn("Script de bloques (" + n.script.size() + ")", x -> openScript(n)));
+        props.addView(btn("Convertir nodo en escena", x -> new AlertDialog.Builder(this)
+                .setTitle("Convertir «" + n.name + "» en escena")
+                .setMessage("Incluye este nodo y sus hijos. Los nodos externos no se trasladan.")
+                .setPositiveButton("Copiar", (d, w) -> convertNode(n, false))
+                .setNeutralButton("Mover", (d, w) -> convertNode(n, true))
+                .setNegativeButton("Cancelar", null).show()));
         props.addView(btn("Eliminar nodo", x -> new AlertDialog.Builder(this)
                 .setTitle("¿Eliminar " + n.name + "?")
                 .setMessage("También se eliminan sus hijos.")
@@ -825,6 +863,19 @@ public class EditorActivity extends Activity {
                     rebuildList();
                     rebuildProps();
                 }).setNegativeButton("Cancelar", null).show()));
+    }
+
+    void convertNode(Game.Node node, boolean move) {
+        try {
+            Game.Scene scene = g.nodeToScene(node, node.name, move);
+            g.openScene(scene);
+            save();
+            refreshAll();
+            pv.invalidate();
+            toast("Escena creada: " + scene.name);
+        } catch (Exception e) {
+            toast("No pude crear la escena: " + e.getMessage());
+        }
     }
 
     // Selector de un nodo (por tipo; type == null = cualquiera, y "(padre)" como valor vacío)
@@ -1549,7 +1600,9 @@ public class EditorActivity extends Activity {
             return;
         }
         if (kind.equals("F")) {
-            pickFunction(e, g.nodes);
+            ArrayList<Game.Node> owners = new ArrayList<Game.Node>(g.nodes);
+            owners.add(g.autoload);
+            pickFunction(e, owners);
             return;
         }
         final String[] cats = {"Una variable", "Propiedad de un nodo (x, y, visible…)", "Valor de un enum",
@@ -1819,6 +1872,7 @@ public class EditorActivity extends Activity {
     String[] nodeNames() {
         ArrayList<String> l = new ArrayList<String>();
         l.add("self");
+        if (!g.autoload.script.isEmpty() && scriptOwner != g.autoload && g.byName(g.autoload.name) == null) l.add(g.autoload.name);
         for (Game.Node n : g.nodes) l.add(n.name);
         return l.toArray(new String[0]);
     }
@@ -1836,12 +1890,24 @@ public class EditorActivity extends Activity {
         return s;
     }
 
+    String[] compatibleNodeNames(String types) {
+        java.util.List<String> accepted = java.util.Arrays.asList(types.split("\\|"));
+        ArrayList<String> names = new ArrayList<String>();
+        if (scriptOwner != null && accepted.contains(scriptOwner.type)) names.add("self");
+        for (Game.Node node : g.nodes) if (accepted.contains(node.type)) names.add(node.name);
+        if (names.isEmpty()) names.add("(sin nodos compatibles)");
+        return names.toArray(new String[0]);
+    }
+
     void openScript(final Game.Node n) {
         scriptOwner = n;
         final Dialog d = new Dialog(this, android.R.style.Theme_Material_NoActionBar);
         LinearLayout root = vbox();
         root.setBackgroundColor(0xFF121212);
         root.addView(title("  Script de " + n.name));
+        if (n == g.autoload) root.addView(label("Al iniciar se ejecuta una vez antes de la primera escena. "
+                + "Las funciones y variables del nodo Autoload quedan disponibles al cambiar de escena. "
+                + "Las tareas pendientes se reinician con cada escena."));
         final LinearLayout box = vbox();
         box.setPadding(0, 0, 0, dp(24));
         ScrollView sv = new ScrollView(this);
@@ -1855,8 +1921,11 @@ public class EditorActivity extends Activity {
         };
         root.addView(btn("Cerrar", x -> {
             d.dismiss();
-            rebuildProps();
         }));
+        d.setOnDismissListener(dialog -> {
+            save();
+            rebuildProps();
+        });
         ref[0].run();
         d.setContentView(root);
         d.show();
@@ -1921,6 +1990,7 @@ public class EditorActivity extends Activity {
         ArrayList<String> labels = new ArrayList<String>();
         for (String[] s : SPEC) {
             if (Game.collisionEvent(s[0]) && (scriptOwner == null || !scriptOwner.type.equals("Collision"))) continue;
+            if (scriptOwner == g.autoload && (s[0].equals("press") || s[0].equals("hold") || s[0].equals("vend"))) continue;
             boolean cs = s[0].equals("case") || s[0].equals("default");
             if (s[2].equals("E") == events && cs == inMatch) {
                 types.add(s[0]);
@@ -1983,6 +2053,7 @@ public class EditorActivity extends Activity {
                             Spinner nodes = (Spinner) views.get(keys.indexOf("node"));
                             String selected = String.valueOf(nodes.getSelectedItem());
                             Game.Node owner = selected.equals("self") ? scriptOwner : g.byName(selected);
+                            if (owner == null && selected.equals(g.autoload.name)) owner = g.autoload;
                             pickFunction(e, owner == null ? Collections.emptyList() : Collections.singletonList(owner));
                         } else pickValue(e, kind);
                     }));
@@ -1996,7 +2067,7 @@ public class EditorActivity extends Activity {
                 v.addView(c);
             } else {
                 String[] opts;
-                if (kind.equals("G")) opts = nodeNames();
+                if (kind.equals("G")) opts = opt.isEmpty() ? nodeNames() : compatibleNodeNames(opt);
                 else if (kind.equals("H")) {
                     ArrayList<String> targets = new ArrayList<String>();
                     targets.add("(ninguno)");
@@ -2018,6 +2089,13 @@ public class EditorActivity extends Activity {
             keys.add(key);
             kinds.add(kind);
             holders.add(holder);
+        }
+        if (b.t.equals("visualClone")) {
+            v.addView(label("No crea otro nodo, script ni colisión. Si compartes cambios, la copia sigue al original "
+                    + "con el desplazamiento indicado; si no, conserva la apariencia y posición del momento."));
+        }
+        if (b.t.equals("play")) {
+            v.addView(label("El video en reversa no reproduce audio. Su fluidez depende del formato y del dispositivo."));
         }
         if (b.t.equals("clone")) {
             v.addView(label("La copia aparece en el siguiente fotograma con los mismos ajustes, bloques y padre, "

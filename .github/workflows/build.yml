@@ -1,4 +1,4 @@
-name: Build APK v10
+name: Motor APK — última versión v11
 on:
   push:
     tags: ['v*']
@@ -48,15 +48,18 @@ jobs:
           (cd pack && zip -r ../base.apk assets)
           $BT/zipalign -f 4 base.apk aligned.apk
           keytool -genkeypair -keystore k.jks -alias a -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=Motor"
-          $BT/apksigner sign --ks k.jks --ks-pass pass:123456 --out motor-v4.apk aligned.apk
-          ls -l motor-v4.apk tpl.apk
+          $BT/apksigner sign --ks k.jks --ks-pass pass:123456 --out motor-v11.apk aligned.apk
+          ls -l motor-v11.apk tpl.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: motor-apk-v10
-          path: motor-v4.apk
+          name: motor-apk-v11
+          path: motor-v11.apk
       - name: Publicar release (solo con tag vX)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: motor-v10.apk
-          
+          name: Motor v11 — Última versión
+          make_latest: true
+          body_path: RELEASE-v11.md
+          fail_on_unmatched_files: true
+          files: motor-v11.apk

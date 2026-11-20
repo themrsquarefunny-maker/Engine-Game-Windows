@@ -145,7 +145,7 @@ public class Game {
         public int swPid = -1, tch = -1;
         public boolean touchAlways, smart, smartMaj, bold, italic, shadow, wrap = true, vdone;
         public int smartRes = 32, align = 1, valign = 1, color = 0xFFFFFFFF, ocolor = 0xFF000000;
-        public float outline = 0f, vol = 1f, vseek;
+        public float outline = 0f, vol = 1f, vseek = -1f;
         public String font = "", vcmd = "";
         TextPaint tpF, tpO;
         StaticLayout lay, layO;
@@ -157,14 +157,16 @@ public class Game {
         public ArrayList<Blk> script = new ArrayList<Blk>();
         // tiempo de ejecución
         public float wx, wy, wa;
-        public boolean wvis, playing, preview, pressed;
+        public boolean wvis, playing, preview, pressed, backwards;
+        ArrayList<VisualCopy> visualCopies;
+        boolean literalText;
         public int pid = -1, frame;
         public float ft;
         public HashMap<String, Object> vars = new HashMap<String, Object>();
         // rotación, ancla y agarre
         public float rot, rot0, limL = -1f, limR = -1f;
         public String anchor = "", gtarget = "", gmode = "arrastrar";
-        public boolean norender, rotd, vwas, trimTransparent, collisionEnabled = true;
+        public boolean norender, rotd, trimTransparent, collisionEnabled = true;
         Matrix tm;
         float gx, gy, ga, gacc, grot;
         Node par;
@@ -335,6 +337,16 @@ public class Game {
         String raw;
     }
 
+    static class VisualCopy {
+        final Node picture; // null = reutiliza el estado visual del original
+        final float dx, dy;
+        VisualCopy(Node picture, float dx, float dy) {
+            this.picture = picture;
+            this.dx = dx;
+            this.dy = dy;
+        }
+    }
+
     static class Mask {
         int w, h;
         boolean[] b;
@@ -346,8 +358,11 @@ public class Game {
         float[] from = new float[2], to = new float[2];
         boolean[] has = new boolean[2];
         float t, d;
+        String easing;
 
         void apply(float k) {
+            if ("entrada/salida".equals(easing)) k = k * k * (3f - 2f * k);
+            else if ("salida suave".equals(easing)) k = k * (2f - k);
             if (kind == 0) {
                 n.alpha = from[0] + (to[0] - from[0]) * k;
             } else if (kind == 1) {
@@ -430,6 +445,12 @@ public class Game {
     final float[] ptx = new float[16], pty = new float[16];
     final boolean[] pton = new boolean[16];
     public int sceneSerial;
+    public static final int EDIT_MOVE = 0, EDIT_SIZE = 1, EDIT_ROTATE = 2;
+    public int editMode = EDIT_MOVE;
+    public final Node autoload = new Node();
+    boolean autoloadStarted;
+    int visualCopyCount;
+    static final int MAX_VISUAL_COPIES = 256;
     String pendingScene;
     Node cam;
     float camX, camY, camZ = 1f;
@@ -457,9 +478,14 @@ public class Game {
     Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     Paint tp = new Paint(Paint.ANTI_ALIAS_FLAG);
     RectF rf = new RectF();
+    private final RectF editRect = new RectF();
 
     public Game(Src s) {
         src = s;
+        autoload.id = -2;
+        autoload.name = "Autoload";
+        autoload.type = "Autoload";
+        autoload.visible = false;
         Scene sc = new Scene();
         sc.id = nextSceneId++;
         sc.name = "Escena 1";
@@ -506,6 +532,7 @@ public class Game {
             sa.put(so);
         }
         o.put("scenes", sa);
+        if (!autoload.script.isEmpty()) o.put("autoload", Blk.arr(autoload.script));
         LinkedHashMap<String, String[]> en = new LinkedHashMap<String, String[]>();
         LinkedHashSet<String> ps = new LinkedHashSet<String>();
         collectDecls(en, ps, keep);
@@ -531,6 +558,7 @@ public class Game {
     public static Game fromJson(String json, Src s, boolean runtime) throws Exception {
         JSONObject o = new JSONObject(json);
         Game g = new Game(s);
+        g.autoload.script = Blk.list(o.optJSONArray("autoload"));
         g.scenes.clear();
         g.landscape = o.optBoolean("land", true);
         g.stretch = o.optString("st", "keep");
@@ -645,6 +673,7 @@ public class Game {
     public ArrayList<Node> allNodes(Set<Integer> keep) {
         ArrayList<Node> l = new ArrayList<Node>();
         for (Scene s : scenes) if (keep == null || keep.contains(s.id)) l.addAll(s.nodes);
+        if (!autoload.script.isEmpty()) l.add(autoload);
         return l;
     }
 
@@ -656,6 +685,7 @@ public class Game {
         if (st == null) st = scenes.get(0);
         keep.add(st.id);
         q.add(st);
+        sceneRefs(autoload.script, q, keep);
         for (int i = 0; i < q.size(); i++) for (Node n : q.get(i).nodes) sceneRefs(n.script, q, keep);
         return keep;
     }
@@ -679,10 +709,26 @@ public class Game {
         return s;
     }
 
-    public Scene duplicateScene(Scene src0, String name) throws Exception {
-        JSONArray a = new JSONArray();
-        for (Node n : src0.nodes) a.put(n.toJson());
-        ArrayList<Node> copy = parseNodes(a);
+    public Scene duplicateScene(Scene source, String name) throws Exception {
+        return copyToScene(source.nodes, name);
+    }
+
+    public Scene nodeToScene(Node root, String name, boolean move) throws Exception {
+        ArrayList<Node> branch = new ArrayList<Node>();
+        for (Node n : nodes) if (isDesc(root, n)) branch.add(n);
+        if (branch.isEmpty()) throw new IllegalArgumentException("El nodo no está en esta escena");
+        compute();
+        Scene scene = copyToScene(branch, name);
+        Node copy = scene.nodes.get(branch.indexOf(root));
+        copy.x = root.wx;
+        copy.y = root.wy;
+        if (move) remove(root);
+        return scene;
+    }
+
+    Scene copyToScene(ArrayList<Node> originals, String name) throws Exception {
+        ArrayList<Node> copy = new ArrayList<Node>();
+        for (Node n : originals) copy.add(Node.fromJson(n.toJson()));
         HashMap<Integer, Integer> map = new HashMap<Integer, Integer>();
         for (Node n : copy) {
             int nid = nextId++;
@@ -836,7 +882,7 @@ public class Game {
     }
 
     void queueClone(Blk b, Node source, Node self) {
-        if (edit || source == null || sceneClones >= MAX_SCENE_CLONES) return;
+        if (edit || source == null || source == autoload || sceneClones >= MAX_SCENE_CLONES) return;
         Node clone;
         try {
             // Copia los ajustes actuales y los bloques, pero no el estado de ejecución.
@@ -856,6 +902,59 @@ public class Game {
         pendingClones.add(clone);
         pendingCloneNames.add(name);
         sceneClones++;
+    }
+
+    void addVisualCopy(Blk block, Node source, Node self) {
+        if (edit || source == null || visualCopyCount >= MAX_VISUAL_COPIES) return;
+        switch (source.type) {
+            case "Image": case "ImageButton": case "AnimatedSprite":
+            case "Color": case "Button": case "Label": break;
+            default: return;
+        }
+        float dx = (float) num(val(block.s("x"), self)), dy = (float) num(val(block.s("y"), self));
+        if (!Float.isFinite(dx) || !Float.isFinite(dy)) return;
+        Node picture = block.b("share") ? null : captureVisual(source);
+        if (source.visualCopies == null) source.visualCopies = new ArrayList<VisualCopy>();
+        source.visualCopies.add(new VisualCopy(picture, dx, dy));
+        visualCopyCount++;
+    }
+
+    // Captura una pose sin serializar scripts, copiar bitmaps ni retener una lista de fotogramas.
+    Node captureVisual(Node source) {
+        compute();
+        Node picture = new Node();
+        picture.type = source.type;
+        picture.wx = source.wx;
+        picture.wy = source.wy;
+        picture.w = source.w;
+        picture.h = source.h;
+        picture.wa = source.wa;
+        picture.wvis = source.wvis;
+        picture.rotd = source.rotd;
+        if (source.rotd) picture.tm = new Matrix(source.tm);
+        picture.res = source.res;
+        picture.trimTransparent = source.trimTransparent;
+        picture.pressed = source.pressed;
+        picture.dim = source.dim;
+        picture.color = source.color;
+        if (source.type.equals("AnimatedSprite")) {
+            picture.type = "Image";
+            picture.res = source.frames.isEmpty() ? "" : source.frames.get(Math.min(source.frame, source.frames.size() - 1));
+        } else if (source.type.equals("Button") || source.type.equals("Label")) {
+            picture.text = source.type.equals("Label") ? labelText(source) : source.text;
+            picture.literalText = true;
+            picture.font = source.font;
+            picture.tsize = source.tsize;
+            picture.bold = source.bold;
+            picture.italic = source.italic;
+            picture.shadow = source.shadow;
+            picture.wrap = source.wrap;
+            picture.align = source.align;
+            picture.valign = source.valign;
+            picture.outline = source.outline;
+            picture.ocolor = source.ocolor;
+        }
+        return picture;
     }
 
     void activateClones() {
@@ -1200,6 +1299,55 @@ public class Game {
         }
         trimBounds.put(name, bounds);
         return bounds;
+    }
+
+    Rect imageCrop(Node n, Bitmap bitmap) {
+        return bitmap != null && n.trimTransparent && n.type.equals("Image") ? trimmedBounds(n.res, bitmap) : null;
+    }
+
+    static void imageBounds(Node n, Bitmap bitmap, Rect crop, float x, float y, RectF out) {
+        if (crop == null) {
+            out.set(x, y, x + n.w, y + n.h);
+        } else {
+            float sx = n.w / bitmap.getWidth(), sy = n.h / bitmap.getHeight();
+            out.set(x + crop.left * sx, y + crop.top * sy, x + crop.right * sx, y + crop.bottom * sy);
+        }
+    }
+
+    // Caja visible del editor; la geometría del proyecto y de los scripts conserva el lienzo original.
+    void editBounds(Node n, float x, float y, RectF out) {
+        Bitmap bitmap = n.trimTransparent && n.type.equals("Image") ? img(n.res) : null;
+        imageBounds(n, bitmap, imageCrop(n, bitmap), x, y, out);
+    }
+
+    void setEditPosition(Node n, boolean horizontal, float value) {
+        if (!Float.isFinite(value)) return;
+        editBounds(n, n.x, n.y, editRect);
+        if (horizontal) n.x += value - editRect.left;
+        else n.y += value - editRect.top;
+    }
+
+    void setEditSize(Node n, boolean horizontal, float value) {
+        if (!Float.isFinite(value)) return;
+        editBounds(n, n.x, n.y, editRect);
+        if (editRect.isEmpty()) return;
+        if (horizontal) resizeEditEdges(n, 0, 0, Math.max(1f, value) - editRect.width(), 0);
+        else resizeEditEdges(n, 0, 0, 0, Math.max(1f, value) - editRect.height());
+    }
+
+    // Convierte los desplazamientos de los lados visibles a desplazamientos del lienzo original.
+    void resizeEditEdges(Node n, float left, float top, float right, float bottom) {
+        float oldW = n.w, oldH = n.h;
+        if (left != 0f || right != 0f) {
+            float dw = (right - left) * (oldW / editRect.width());
+            n.x += left - ((editRect.left - n.x) / oldW) * dw;
+            n.w += dw;
+        }
+        if (top != 0f || bottom != 0f) {
+            float dh = (bottom - top) * (oldH / editRect.height());
+            n.y += top - ((editRect.top - n.y) / oldH) * dh;
+            n.h += dh;
+        }
     }
 
     public void fitNode(Node n) {
@@ -2014,7 +2162,7 @@ public class Game {
                 if (store != null) store.clear();
                 break;
             case "scene":
-                pendingScene = b.s("scene");
+                if (sceneByName(b.s("scene")) != null) pendingScene = b.s("scene");
                 break;
             case "orientset":
                 setOrient(!b.s("mode").equals("vertical"));
@@ -2038,6 +2186,15 @@ public class Game {
             case "clone":
                 queueClone(b, t, self);
                 break;
+            case "visualClone":
+                addVisualCopy(b, t, self);
+                break;
+            case "clearVisualClones":
+                if (t != null && t.visualCopies != null) {
+                    visualCopyCount -= t.visualCopies.size();
+                    t.visualCopies = null;
+                }
+                break;
             case "funcExists": {
                 String result = b.s("ret").trim();
                 if (!result.isEmpty()) putVar(result, findFn(b.s("name").trim(), t, true) != null, self);
@@ -2054,23 +2211,37 @@ public class Game {
             case "setsnd":
                 t.snd = b.s("asset");
                 break;
-            case "play":
+            case "play": {
+                String loop = b.s("loop");
+                if (loop.equals("activar") || loop.equals("desactivar")) t.loop = loop.equals("activar");
+                boolean reverse = b.s("dir").equals("reversa"), restart = b.b("restart");
                 if (t.type.equals("Sound")) playSound(t);
-                else if (t.type.equals("AnimatedSprite")) t.playing = true;
-                else if (t.type.equals("Video")) t.vcmd = "play";
+                else if (t.type.equals("AnimatedSprite")) {
+                    if (restart || (reverse && t.frame == 0)) t.frame = reverse ? Math.max(0, t.frames.size() - 1) : 0;
+                    if (restart || t.backwards != reverse) t.ft = 0f;
+                    t.backwards = reverse;
+                    t.playing = true;
+                } else if (t.type.equals("Video")) {
+                    t.backwards = reverse;
+                    if (restart) t.vseek = -1f;
+                    t.vcmd = restart ? "restart" : "play";
+                }
                 break;
+            }
             case "stop":
                 if (t.type.equals("Sound")) stopSound(t);
                 else if (t.type.equals("AnimatedSprite")) t.playing = false;
-                else if (t.type.equals("Video")) t.vcmd = "stop";
+                else if (t.type.equals("Video")) {
+                    t.vcmd = "stop";
+                    t.vseek = -1f;
+                }
                 break;
             case "vpause":
                 if (t.type.equals("Video")) t.vcmd = "pause";
                 break;
             case "vseek":
                 if (t.type.equals("Video")) {
-                    t.vseek = (float) num(val(b.s("secs"), self));
-                    t.vcmd = "seek";
+                    t.vseek = Math.max(0f, (float) num(val(b.s("secs"), self)));
                 }
                 break;
             case "vvol":
@@ -2079,6 +2250,7 @@ public class Game {
             case "setvideo":
                 if (t.type.equals("Video")) {
                     t.res = b.s("asset");
+                    t.vseek = -1f;
                     t.vcmd = "reload";
                 }
                 break;
@@ -2101,17 +2273,10 @@ public class Game {
             case "stoprender":
                 t.norender = true;
                 dropRes(t);
-                if (t.type.equals("Video")) {
-                    t.vwas = t.playing;
-                    t.vcmd = "pause";
-                }
+                // VideoLayer pausa la salida sin perder la intención de reproducción.
                 break;
             case "startrender":
                 t.norender = false;
-                if (t.vwas) {
-                    t.vwas = false;
-                    t.vcmd = "play";
-                }
                 break;
             case "pos":
                 if (!b.s("x").trim().isEmpty()) t.x = (float) num(val(b.s("x"), self));
@@ -2125,6 +2290,7 @@ public class Game {
                 Tw w = new Tw();
                 w.n = t;
                 w.d = (float) num(val(b.s("secs"), self));
+                w.easing = b.s("ease");
                 String what = b.s("what");
                 if (what.equals("modulate")) {
                     w.kind = 0;
@@ -2543,6 +2709,8 @@ public class Game {
     // ================= Escenas y ciclo de juego =================
     public void start() {
         gvars.clear();
+        autoloadStarted = false;
+        autoload.vars.clear();
         Scene s = sceneById(startId);
         if (s == null && !scenes.isEmpty()) s = scenes.get(0);
         if (s != null) enterScene(s);
@@ -2561,9 +2729,12 @@ public class Game {
         } else {
             nodes = edit ? sc.nodes : new ArrayList<Node>(sc.nodes);
         }
+        if (!edit && !autoload.script.isEmpty()) nodes.add(0, autoload);
         pendingClones.clear();
         pendingCloneNames.clear();
         sceneClones = 0;
+        visualCopyCount = 0;
+        upAll();
         svars.clear();
         msgs.clear();
         for (Msg m : gq) {
@@ -2599,9 +2770,11 @@ public class Game {
     }
 
     void initRuntimeNode(Node n) {
-        nameMap.put(n.name, n);
+        if (n != autoload || !nameMap.containsKey(n.name)) nameMap.put(n.name, n);
         if (n.type.equals("Video")) hasVideo = true;
         n.playing = n.autoplay;
+        n.backwards = false;
+        n.visualCopies = null;
         n.rot0 = n.rot;
         n.norender = false;
         n.frame = 0;
@@ -2628,9 +2801,16 @@ public class Game {
             Node n = nodes.get(i);
             if (n.type.equals("Sound") && n.autoplay) playSound(n);
         }
-        for (int i = first; i < nodes.size(); i++) {
+        for (int i = first; i < nodes.size() && pendingScene == null; i++) {
             Node n = nodes.get(i);
-            for (Blk b : n.script) if (b.t.equals("start")) spawn(b.body, n);
+            if (n == autoload) {
+                if (autoloadStarted) continue;
+                autoloadStarted = true;
+            }
+            for (Blk b : n.script) {
+                if (b.t.equals("start")) spawn(b.body, n);
+                if (pendingScene != null) break;
+            }
         }
     }
 
@@ -2650,16 +2830,16 @@ public class Game {
             if (!n.type.equals("AnimatedSprite") || n.frames.isEmpty() || n.norender) continue;
             boolean on = edit ? n.preview : n.playing;
             if (!on) continue;
-            float spf = 1f / Math.max(0.1f, n.fps);
+            float spf = 1f / Math.max(0.1f, Math.min(240f, n.fps));
             n.ft += dt;
             while (n.ft >= spf) {
                 n.ft -= spf;
-                n.frame++;
-                if (n.frame >= n.frames.size()) {
+                n.frame += n.backwards ? -1 : 1;
+                if (n.frame < 0 || n.frame >= n.frames.size()) {
                     if (n.loop) {
-                        n.frame = 0;
+                        n.frame = n.backwards ? n.frames.size() - 1 : 0;
                     } else {
-                        n.frame = n.frames.size() - 1;
+                        n.frame = n.backwards ? 0 : n.frames.size() - 1;
                         n.playing = false;
                         n.preview = false;
                         n.ft = 0;
@@ -2929,6 +3109,10 @@ public class Game {
             float px = (useCam && !n.fixed) ? cx : vx;
             float py = (useCam && !n.fixed) ? cy : vy;
             if (inNode(n, px, py)) {
+                if (edit && n.trimTransparent) {
+                    editBounds(n, n.wx, n.wy, editRect);
+                    if (!editRect.contains(mx, my)) continue;
+                }
                 if (onlyTouchable && n.smart && !maskHit(n, mx, my)) continue;
                 return n;
             }
@@ -3039,34 +3223,44 @@ public class Game {
     // 8 manijas redondas: 4 esquinas y 4 lados (0 = arriba izq., sentido horario)
     static final int[] HC = {0, 1, 2, 2, 2, 1, 0, 0}, HR = {0, 0, 0, 1, 2, 2, 2, 1};
 
-    float hx(Node n, int i) {
-        return n.wx + n.w * HC[i] / 2f;
+    float hx(RectF box, int i) {
+        return box.left + box.width() * HC[i] / 2f;
     }
 
-    float hy(Node n, int i) {
-        return n.wy + n.h * HR[i] / 2f;
+    float hy(RectF box, int i) {
+        return box.top + box.height() * HR[i] / 2f;
     }
 
-    void drawHandles(Canvas c, Node n) {
+    void drawHandles(Canvas c, RectF box) {
         float k = 1f / Math.max(0.1f, sx);
         for (int i = 0; i < 8; i++) {
             p.setStyle(Paint.Style.FILL);
             p.setColor(0xFFFFFFFF);
-            c.drawCircle(hx(n, i), hy(n, i), 11f * k, p);
+            c.drawCircle(hx(box, i), hy(box, i), 11f * k, p);
             p.setStyle(Paint.Style.STROKE);
             p.setStrokeWidth(2.5f * k);
             p.setColor(0xFF00AAFF);
-            c.drawCircle(hx(n, i), hy(n, i), 11f * k, p);
+            c.drawCircle(hx(box, i), hy(box, i), 11f * k, p);
         }
         p.setStyle(Paint.Style.FILL);
     }
 
     public int handleAt(Node n, float vx, float vy, float tol) {
         if (n.type.equals("Sound")) return -1;
+        editBounds(n, n.wx, n.wy, editRect);
+        if (editRect.isEmpty()) return -1;
+        if (n.rotd) {
+            if (!n.tm.invert(hm)) return -1;
+            fp[0] = vx;
+            fp[1] = vy;
+            hm.mapPoints(fp);
+            vx = fp[0];
+            vy = fp[1];
+        }
         int best = -1;
         float bd = tol * tol;
         for (int i = 0; i < 8; i++) {
-            float dx = vx - hx(n, i), dy = vy - hy(n, i);
+            float dx = vx - hx(editRect, i), dy = vy - hy(editRect, i);
             float d = dx * dx + dy * dy;
             if (d <= bd) {
                 bd = d;
@@ -3077,24 +3271,73 @@ public class Game {
     }
 
     public void resizeBy(Node n, int h, float dx, float dy) {
-        int col = HC[h], row = HR[h];
-        if (col == 0) {
-            if (n.w - dx >= 4f) {
-                n.x += dx;
-                n.w -= dx;
-            }
-        } else if (col == 2) {
-            if (n.w + dx >= 4f) n.w += dx;
+        editBounds(n, n.x, n.y, editRect);
+        if (editRect.isEmpty()) return;
+        if (n.rotd) {
+            if (!n.tm.invert(hm)) return;
+            fp[0] = dx;
+            fp[1] = dy;
+            hm.mapVectors(fp);
+            dx = fp[0];
+            dy = fp[1];
         }
-        if (row == 0) {
-            if (n.h - dy >= 4f) {
-                n.y += dy;
-                n.h -= dy;
+        int col = HC[h], row = HR[h];
+        float left = col == 0 ? dx : 0f, right = col == 2 ? dx : 0f;
+        float top = row == 0 ? dy : 0f, bottom = row == 2 ? dy : 0f;
+        float min = n.trimTransparent ? 1f : 4f;
+        if (editRect.width() + right - left < Math.min(min, editRect.width())) left = right = 0f;
+        if (editRect.height() + bottom - top < Math.min(min, editRect.height())) top = bottom = 0f;
+        if (left == 0f && right == 0f && top == 0f && bottom == 0f) return;
+
+        float x = n.x, y = n.y, w = n.w, height = n.h;
+        resizeEditEdges(n, left, top, right, bottom);
+        if (n.rot != 0f) {
+            Node anchor = n.anchor.isEmpty() ? null : byName(n.anchor);
+            if (anchor == null || inheritsPositionFrom(anchor, n)) {
+                // Compensa el desplazamiento del pivote para que el lado opuesto quede fijo.
+                float px = n.x - x, py = n.y - y;
+                if (anchor == null || anchor == n) {
+                    px += (n.w - w) / 2f;
+                    py += (n.h - height) / 2f;
+                }
+                double a = Math.toRadians(n.rot);
+                float c = (float) Math.cos(a), s = (float) Math.sin(a);
+                n.x += (c - 1f) * px - s * py;
+                n.y += s * px + (c - 1f) * py;
             }
-        } else if (row == 2) {
-            if (n.h + dy >= 4f) n.h += dy;
         }
         n.fit = false;
+    }
+
+    Matrix inheritedMatrix(Node n) {
+        return n.inherit && n.par != null && n.par.rotd ? n.par.tm : null;
+    }
+
+    void editPivot(Node n, float[] out) {
+        Node anchor = n.anchor.isEmpty() ? null : byName(n.anchor);
+        if (anchor == null) anchor = n;
+        out[0] = origin(anchor, true) + anchor.w / 2f;
+        out[1] = origin(anchor, false) + anchor.h / 2f;
+        Matrix parent = inheritedMatrix(n);
+        if (parent != null) parent.mapPoints(out);
+    }
+
+    void dragEdit(Node n, float x0, float y0, float x1, float y1) {
+        if (editMode == EDIT_ROTATE) {
+            editPivot(n, fp);
+            float ax = x0 - fp[0], ay = y0 - fp[1], bx = x1 - fp[0], by = y1 - fp[1];
+            if (ax * ax + ay * ay < 1f || bx * bx + by * by < 1f) return;
+            n.rot += (float) Math.toDegrees(Math.atan2(ax * by - ay * bx, ax * bx + ay * by));
+        } else if (editMode == EDIT_MOVE) {
+            Matrix transform = inheritedMatrix(n);
+            Node anchor = n.anchor.isEmpty() ? null : byName(n.anchor);
+            if (n.rotd && anchor != null && !inheritsPositionFrom(anchor, n)) transform = n.tm;
+            fp[0] = x1 - x0;
+            fp[1] = y1 - y0;
+            if (transform != null && transform.invert(hm)) hm.mapVectors(fp);
+            n.x += fp[0];
+            n.y += fp[1];
+        }
     }
 
     void drawMask(Canvas c, Node n) {
@@ -3134,6 +3377,7 @@ public class Game {
     // Reemplaza {variable} por su valor
     String labelText(Node n) {
         String t = n.text;
+        if (n.literalText) return t;
         if (edit || t.indexOf('{') < 0) return t;
         StringBuilder sb = new StringBuilder();
         int i = 0;
@@ -3288,25 +3532,35 @@ public class Game {
             if (uc && !n.fixed) {
                 c.save();
                 c.concat(camM);
-                drawNode(c, n, false);
+                drawWithCopies(c, n, false);
                 c.restore();
             } else {
-                drawNode(c, n, true);
+                drawWithCopies(c, n, true);
             }
         }
-        if (edit && sel != null && sel.inOrder && sel.smart) drawMask(c, sel);
         if (edit && sel != null && sel.inOrder) {
-            if (sel.rotd) {
+            editBounds(sel, sel.wx, sel.wy, editRect);
+            if (!editRect.isEmpty()) {
                 c.save();
-                c.concat(sel.tm);
+                if (sel.rotd) c.concat(sel.tm);
+                if (sel.smart) {
+                    c.save();
+                    c.clipRect(editRect);
+                    drawMask(c, sel);
+                    c.restore();
+                }
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(3f / Math.max(0.1f, sx));
+                p.setColor(0xFFFF00FF);
+                c.drawRect(editRect, p);
+                p.setStyle(Paint.Style.FILL);
+                if (editMode == EDIT_SIZE && !sel.type.equals("Sound")) drawHandles(c, editRect);
+                c.restore();
+                if (editMode == EDIT_ROTATE) {
+                    editPivot(sel, fp);
+                    c.drawCircle(fp[0], fp[1], 7f / Math.max(0.1f, sx), p);
+                }
             }
-            p.setStyle(Paint.Style.STROKE);
-            p.setStrokeWidth(3f / Math.max(0.1f, sx));
-            p.setColor(0xFFFF00FF);
-            c.drawRect(sel.wx, sel.wy, sel.wx + sel.w, sel.wy + sel.h, p);
-            p.setStyle(Paint.Style.FILL);
-            if (!sel.type.equals("Sound")) drawHandles(c, sel);
-            if (sel.rotd) c.restore();
         }
         c.restore();
     }
@@ -3348,6 +3602,22 @@ public class Game {
         c.drawText(label, rf.centerX(), rf.centerY(), tp);
     }
 
+    void drawWithCopies(Canvas canvas, Node n, boolean cull) {
+        drawNode(canvas, n, cull);
+        if (n.visualCopies == null) return;
+        for (int i = 0; i < n.visualCopies.size(); i++) {
+            VisualCopy copy = n.visualCopies.get(i);
+            Node picture = copy.picture == null ? n : copy.picture;
+            if (!picture.wvis || picture.wa <= 0.003f) continue;
+            if (cull && !picture.rotd && (picture.wx + copy.dx > vw || picture.wy + copy.dy > vh
+                    || picture.wx + copy.dx + picture.w < 0 || picture.wy + copy.dy + picture.h < 0)) continue;
+            canvas.save();
+            canvas.translate(copy.dx, copy.dy);
+            drawNode(canvas, picture, false);
+            canvas.restore();
+        }
+    }
+
     void drawNode(Canvas c, Node n, boolean cull) {
         if (n.rotd && n.wvis && n.wa > 0.003f) {
             c.save();
@@ -3372,13 +3642,10 @@ public class Game {
                 int aa = (n.type.equals("ImageButton") && n.pressed && n.dim) ? a * 7 / 10 : a;
                 if (b != null) {
                     p.setAlpha(aa);
-                    Rect src = null;
-                    if (n.trimTransparent && n.type.equals("Image")) {
-                        src = trimmedBounds(n.res, b);
+                    Rect src = imageCrop(n, b);
+                    if (src != null) {
                         if (src.isEmpty()) break;
-                        float sx = n.w / b.getWidth(), sy = n.h / b.getHeight();
-                        rf.set(n.wx + src.left * sx, n.wy + src.top * sy,
-                                n.wx + src.right * sx, n.wy + src.bottom * sy);
+                        imageBounds(n, b, src, n.wx, n.wy, rf);
                     }
                     c.drawBitmap(b, src, rf, p);
                 } else if (edit) {
