@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.media.MediaMetadataRetriever;
@@ -14,6 +15,7 @@ import android.text.TextPaint;
 import android.media.MediaPlayer;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -50,7 +52,7 @@ public class Game {
         void sync(Game g);
     }
 
-    public static final String[] TYPES = {"Image", "Button", "ImageButton", "Label", "Color", "Sound", "AnimatedSprite", "Video", "Camera2D", "Group", "Anchor", "Grab", "Collision"};
+    public static final String[] TYPES = {"Image", "Button", "ImageButton", "Label", "Color", "Sound", "AnimatedSprite", "Video", "Camera2D", "Group", "Anchor", "Grab", "Collision", "Limiter"};
 
     // ================= Valores de enum =================
     public static class EnumVal {
@@ -162,7 +164,7 @@ public class Game {
         // rotación, ancla y agarre
         public float rot, rot0, limL = -1f, limR = -1f;
         public String anchor = "", gtarget = "", gmode = "arrastrar";
-        public boolean norender, rotd, vwas;
+        public boolean norender, rotd, vwas, trimTransparent, collisionEnabled = true;
         Matrix tm;
         float gx, gy, ga, gacc, grot;
         Node par;
@@ -217,6 +219,8 @@ public class Game {
             o.put("ow", outline);
             o.put("vol", vol);
             o.put("font", font);
+            if (trimTransparent) o.put("trim", true);
+            if (!collisionEnabled) o.put("collisionEnabled", false);
             if (rot != 0f) o.put("rot", rot);
             if (!anchor.isEmpty()) o.put("anc", anchor);
             if (!gtarget.isEmpty()) o.put("gt", gtarget);
@@ -283,6 +287,8 @@ public class Game {
             n.outline = (float) o.optDouble("ow", 0);
             n.vol = (float) o.optDouble("vol", 1);
             n.font = o.optString("font", "");
+            n.trimTransparent = o.optBoolean("trim", false);
+            n.collisionEnabled = o.optBoolean("collisionEnabled", true);
             JSONArray fr = o.optJSONArray("fr");
             if (fr != null) for (int i = 0; i < fr.length(); i++) n.frames.add(fr.getString(i));
             n.script = Blk.list(o.optJSONArray("script"));
@@ -347,6 +353,8 @@ public class Game {
             } else if (kind == 1) {
                 if (has[0]) n.x = from[0] + (to[0] - from[0]) * k;
                 if (has[1]) n.y = from[1] + (to[1] - from[1]) * k;
+            } else if (kind == 3) {
+                n.rot = from[0] + (to[0] - from[0]) * k;
             } else {
                 if (has[0]) n.w = from[0] + (to[0] - from[0]) * k;
                 if (has[1]) n.h = from[1] + (to[1] - from[1]) * k;
@@ -442,6 +450,7 @@ public class Game {
     ArrayList<Hold> holds = new ArrayList<Hold>();
     ArrayList<Task> tasks = new ArrayList<Task>();
     HashMap<String, Bitmap> cache = new HashMap<String, Bitmap>();
+    final HashMap<String, Rect> trimBounds = new HashMap<String, Rect>();
     HashMap<String, Bitmap> thumbs = new HashMap<String, Bitmap>();
     HashMap<String, Mask> masks = new HashMap<String, Mask>();
     HashMap<String, Typeface> tfCache = new HashMap<String, Typeface>();
@@ -812,6 +821,9 @@ public class Game {
         } else if (type.equals("Anchor")) {
             n.w = 40;
             n.h = 40;
+        } else if (type.equals("Limiter")) {
+            n.w = 480;
+            n.h = 320;
         } else if (type.equals("Grab") || type.equals("Collision")) {
             n.w = 160;
             n.h = 160;
@@ -856,6 +868,7 @@ public class Game {
         swipeState = -1;
         for (int i = first; i < nodes.size(); i++) initRuntimeNode(nodes.get(i));
         rebuild();
+        compute();
         startNodes(first);
     }
 
@@ -912,11 +925,73 @@ public class Game {
         }
     }
 
+    // Posición global antes del giro, incluso si aún no se ha dibujado este fotograma.
+    static float origin(Node n, boolean horizontal) {
+        float v = 0f;
+        while (n != null && n.inOrder) {
+            v += horizontal ? n.x : n.y;
+            n = n.inherit ? n.par : null;
+        }
+        return v;
+    }
+
+    static boolean inheritsPositionFrom(Node node, Node ancestor) {
+        for (Node n = node; n != null && n.inOrder; n = n.inherit ? n.par : null) {
+            if (n == ancestor) return true;
+        }
+        return false;
+    }
+
+    // Limita al hijo directo en los ejes del padre; la rotación heredada no cambia esos ejes.
+    boolean constrain(Node n) {
+        Node box = n.par;
+        if (edit || box == null || !box.type.equals("Limiter")) return false;
+        float ox = n.inherit ? 0f : origin(box, true), oy = n.inherit ? 0f : origin(box, false);
+        float bw = Math.max(0f, box.w), bh = Math.max(0f, box.h);
+        float oldX = n.x, oldY = n.y;
+        if (n.rot % 360f == 0f) {
+            n.w = Math.max(0f, Math.min(n.w, bw));
+            n.h = Math.max(0f, Math.min(n.h, bh));
+            n.x = ox + Math.max(0f, Math.min(n.x - ox, bw - n.w));
+            n.y = oy + Math.max(0f, Math.min(n.y - oy, bh - n.h));
+        } else {
+            double radians = Math.toRadians(n.rot);
+            float c = (float) Math.cos(radians), s = (float) Math.sin(radians);
+            n.w = Math.max(0f, n.w);
+            n.h = Math.max(0f, n.h);
+            float ew = Math.abs(c) * n.w + Math.abs(s) * n.h;
+            float eh = Math.abs(s) * n.w + Math.abs(c) * n.h;
+            if (ew > bw + 0.0001f || eh > bh + 0.0001f) {
+                float scale = Math.min(ew == 0f ? 1f : bw / ew, eh == 0f ? 1f : bh / eh);
+                n.w *= scale;
+                n.h *= scale;
+                ew *= scale;
+                eh *= scale;
+            }
+            float lx = n.x - ox + n.w / 2f, ly = n.y - oy + n.h / 2f;
+            Node anchor = n.anchor.isEmpty() ? null : byName(n.anchor);
+            boolean external = anchor != null && !inheritsPositionFrom(anchor, n);
+            float cx = lx, cy = ly;
+            if (anchor != null) {
+                float ax = origin(anchor, true) - origin(box, true) + anchor.w / 2f;
+                float ay = origin(anchor, false) - origin(box, false) + anchor.h / 2f;
+                cx = ax + c * (lx - ax) - s * (ly - ay);
+                cy = ay + s * (lx - ax) + c * (ly - ay);
+            }
+            float dx = Math.max(ew / 2f, Math.min(cx, bw - ew / 2f)) - cx;
+            float dy = Math.max(eh / 2f, Math.min(cy, bh - eh / 2f)) - cy;
+            n.x += external ? c * dx + s * dy : dx;
+            n.y += external ? -s * dx + c * dy : dy;
+        }
+        return Math.abs(n.x - oldX) > 0.0001f || Math.abs(n.y - oldY) > 0.0001f;
+    }
+
     void compute() {
         for (int i = 0; i < order.size(); i++) {
             Node n = order.get(i);
             Node pn = n.par;
             boolean inh = pn != null && n.inherit;
+            constrain(n);
             n.wx = inh ? pn.wx + n.x : n.x;
             n.wy = inh ? pn.wy + n.y : n.y;
             n.wa = inh ? pn.wa * n.alpha : n.alpha;
@@ -931,8 +1006,8 @@ public class Game {
             else n.tm.reset();
             if (n.rot != 0f) {
                 Node an = n.anchor.isEmpty() ? null : byName(n.anchor);
-                n.tm.preRotate(n.rot, an != null ? an.wx + an.w / 2f : n.wx + n.w / 2f,
-                        an != null ? an.wy + an.h / 2f : n.wy + n.h / 2f);
+                n.tm.preRotate(n.rot, an != null ? origin(an, true) + an.w / 2f : n.wx + n.w / 2f,
+                        an != null ? origin(an, false) + an.h / 2f : n.wy + n.h / 2f);
             }
             n.rotd = true;
         }
@@ -966,7 +1041,7 @@ public class Game {
     }
 
     boolean overlaps(Node a, Node b) {
-        if (b == null || a == b || !a.wvis || !b.wvis || !a.inOrder || !b.inOrder) return false;
+        if (a == null || b == null || a == b || !a.collisionEnabled || !b.collisionEnabled || !a.wvis || !b.wvis || !a.inOrder || !b.inOrder) return false;
         if (a.w <= 0 || a.h <= 0 || b.w <= 0 || b.h <= 0) return false;
         if (cam != null && viewMode.equals("camera") && a.fixed != b.fixed) return false;
         if (!a.rotd && !b.rotd) {
@@ -977,15 +1052,21 @@ public class Game {
         return !separates(collisionA, collisionB) && !separates(collisionB, collisionA);
     }
 
+    static boolean collisionEvent(String type) {
+        return type.equals("collision") || type.equals("collisionExit") || type.equals("collisionStay");
+    }
+
     void pollCollisions() {
         compute();
         ArrayList<Object[]> hits = null;
         for (Node n : nodes) {
             if (!n.type.equals("Collision")) continue;
             for (Blk b : n.script) {
-                if (!b.t.equals("collision")) continue;
+                if (!collisionEvent(b.t)) continue;
                 boolean touching = overlaps(n, tgt(b, n));
-                if (touching && !b.overlapping) {
+                boolean fire = b.t.equals("collisionExit") ? !touching && b.overlapping
+                        : touching && (b.t.equals("collisionStay") ? b.task == null || b.task.done : !b.overlapping);
+                if (fire) {
                     if (hits == null) hits = new ArrayList<Object[]>();
                     hits.add(new Object[]{b, n});
                 }
@@ -995,7 +1076,9 @@ public class Game {
         // Ejecutar después de medir todos los pares: un evento puede mover otros nodos.
         if (hits != null) for (Object[] hit : hits) {
             if (pendingScene != null) break;
-            spawn(((Blk) hit[0]).body, (Node) hit[1]);
+            Blk b = (Blk) hit[0];
+            Task task = spawn(b.body, (Node) hit[1]);
+            if (b.t.equals("collisionStay")) b.task = task;
         }
     }
 
@@ -1069,7 +1152,7 @@ public class Game {
 
     boolean sizeTween(ArrayList<Blk> l) {
         for (Blk b : l) {
-            if (b.t.equals("tween") && !b.s("what").equals("modulate") && !b.s("what").equals("mover")) return true;
+            if (b.t.equals("tween") && b.s("what").equals("tamaño")) return true;
             if (sizeTween(b.body) || sizeTween(b.els)) return true;
         }
         return false;
@@ -1090,6 +1173,33 @@ public class Game {
 
     public void flush() {
         cache.clear();
+        trimBounds.clear();
+        masks.clear();
+        tfCache.clear();
+    }
+
+    Rect trimmedBounds(String name, Bitmap bitmap) {
+        Rect bounds = trimBounds.get(name);
+        if (bounds != null) return bounds;
+        int w = bitmap.getWidth(), h = bitmap.getHeight();
+        bounds = new Rect(0, 0, w, h);
+        if (bitmap.hasAlpha()) {
+            int left = w, top = h, right = 0, bottom = 0;
+            int[] row = new int[w];
+            for (int y = 0; y < h; y++) {
+                bitmap.getPixels(row, 0, w, 0, y, w, 1);
+                for (int x = 0; x < w; x++) if ((row[x] >>> 24) != 0) {
+                    left = Math.min(left, x);
+                    right = Math.max(right, x + 1);
+                    top = Math.min(top, y);
+                    bottom = y + 1;
+                }
+            }
+            if (right == 0) bounds.setEmpty();
+            else bounds.set(left, top, right, bottom);
+        }
+        trimBounds.put(name, bounds);
+        return bounds;
     }
 
     public void fitNode(Node n) {
@@ -1541,6 +1651,12 @@ public class Game {
     boolean probLive = true;
     final ArrayList<Object[]> layerOps = new ArrayList<Object[]>();
 
+    // Conserva las comas decimales de por(0,5) y prob(0,5).
+    static boolean separatorComma(String s, int i) {
+        return s.charAt(i) == ',' && (i + 1 == s.length() || !Character.isDigit(s.charAt(i + 1))
+                || (i > 0 && !Character.isDigit(s.charAt(i - 1)) && "(+ -\t".indexOf(s.charAt(i - 1)) < 0));
+    }
+
     static ArrayList<String> tokens(String s) {
         ArrayList<String> r = new ArrayList<String>();
         int i = 0, n = s.length();
@@ -1549,10 +1665,15 @@ public class Game {
             if (Character.isWhitespace(c)) {
                 i++;
             } else if (c == '"') {
-                int j = s.indexOf('"', i + 1);
-                if (j < 0) j = n - 1;
-                r.add(s.substring(i, j + 1));
+                int j = i + 1;
+                while (j < n && s.charAt(j) != '"') {
+                    if (s.charAt(j++) == '\\' && j < n) j++;
+                }
+                r.add(s.substring(i, Math.min(j + 1, n)));
                 i = j + 1;
+            } else if (separatorComma(s, i)) {
+                r.add(",");
+                i++;
             } else if ("=!<>&|()".indexOf(c) >= 0) {
                 int j = i + 1;
                 if (j < n && " == != <= >= && || ".contains(" " + c + s.charAt(j) + " ")) j++;
@@ -1560,7 +1681,7 @@ public class Game {
                 i = j;
             } else {
                 int j = i;
-                while (j < n && !Character.isWhitespace(s.charAt(j)) && "=!<>&|()\"".indexOf(s.charAt(j)) < 0) j++;
+                while (j < n && !Character.isWhitespace(s.charAt(j)) && "=!<>&|()\"".indexOf(s.charAt(j)) < 0 && !separatorComma(s, j)) j++;
                 r.add(s.substring(i, j));
                 i = j;
             }
@@ -1621,6 +1742,7 @@ public class Game {
             ct = toks(b);
             ci = 0;
             cself = self;
+            collisionGeometry = false;
             boolean r = pOr();
             return ci >= ct.size() && r;
         } catch (RuntimeException e) {
@@ -1660,6 +1782,20 @@ public class Game {
         return pCmp();
     }
 
+    boolean collisionGeometry;
+
+    Node collisionNode(String token) {
+        if (token.startsWith("\"")) {
+            if (token.indexOf('\\') < 0) return byName(token.substring(1, token.length() - 1));
+            try {
+                return byName(String.valueOf(new JSONTokener(token).nextValue()));
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        return token.equals("self") ? cself : byName(token);
+    }
+
     boolean pCmp() {
         String t = pk();
         if (t == null) throw new IllegalStateException();
@@ -1675,6 +1811,22 @@ public class Game {
             String a = pk();
             if (a == null || a.equals(")")) throw new IllegalStateException();
             ci++;
+            if (t.equals("colisiona")) {
+                if (!",".equals(pk())) throw new IllegalStateException();
+                ci++;
+                String b = pk();
+                if (b == null || ")".equals(b)) throw new IllegalStateException();
+                ci++;
+                if (!")".equals(pk())) throw new IllegalStateException();
+                ci++;
+                Node first = collisionNode(a), second = collisionNode(b);
+                if (first == null || second == null || (!first.type.equals("Collision") && !second.type.equals("Collision"))) return false;
+                if (!collisionGeometry) {
+                    compute();
+                    collisionGeometry = true;
+                }
+                return overlaps(first, second);
+            }
             if (!")".equals(pk())) throw new IllegalStateException();
             ci++;
             if (t.equals("por")) return true;
@@ -1765,7 +1917,7 @@ public class Game {
 
     void exec(Blk b, Node self) {
         Node t = tgt(b, self);
-        if (b.f.containsKey("node") && t == null) return;
+        if (b.f.containsKey("node") && t == null && !b.t.equals("funcExists")) return;
         switch (b.t) {
             case "send": {
                 Msg m = new Msg();
@@ -1886,9 +2038,18 @@ public class Game {
             case "clone":
                 queueClone(b, t, self);
                 break;
+            case "funcExists": {
+                String result = b.s("ret").trim();
+                if (!result.isEmpty()) putVar(result, findFn(b.s("name").trim(), t, true) != null, self);
+                break;
+            }
+            case "collisionEnable":
+                if (t != null && t.type.equals("Collision")) t.collisionEnabled = b.b("enabled");
+                break;
             case "setimg":
                 t.res = b.s("asset");
                 if (t.fit) fitNode(t);
+                constrain(t);
                 break;
             case "setsnd":
                 t.snd = b.s("asset");
@@ -1955,6 +2116,7 @@ public class Game {
             case "pos":
                 if (!b.s("x").trim().isEmpty()) t.x = (float) num(val(b.s("x"), self));
                 if (!b.s("y").trim().isEmpty()) t.y = (float) num(val(b.s("y"), self));
+                constrain(t);
                 break;
             case "text":
                 t.text = String.valueOf(val(b.s("val"), self));
@@ -1968,6 +2130,11 @@ public class Game {
                     w.kind = 0;
                     w.from[0] = t.alpha;
                     w.to[0] = clamp01((float) num(val(b.s("x"), self)));
+                } else if (what.equals("rotación")) {
+                    if (b.s("x").trim().isEmpty()) break;
+                    w.kind = 3;
+                    w.from[0] = t.rot;
+                    w.to[0] = (float) num(val(b.s("x"), self));
                 } else {
                     boolean mv = what.equals("mover");
                     w.kind = mv ? 1 : 2;
@@ -1982,13 +2149,18 @@ public class Game {
                     if (tws.get(i).n == t && tws.get(i).kind == w.kind) tws.remove(i);
                 }
                 if (what.equals("modulate") && b.f.containsKey("touch")) t.touchAlways = b.b("touch");
-                if (w.d <= 0) w.apply(1f);
+                if (w.d <= 0) applyTween(w, 1f);
                 else tws.add(w);
                 break;
             }
             default:
                 break;
         }
+    }
+
+    void applyTween(Tw tween, float progress) {
+        tween.apply(progress);
+        if (tween.kind != 0) constrain(tween.n);
     }
 
     // ================= Ejecutor de scripts (con esperas y bucles) =================
@@ -2041,8 +2213,8 @@ public class Game {
         return f;
     }
 
-    Object[] findFn(String name, Node self) {
-        if (name.isEmpty()) return null;
+    Object[] findFn(String name, Node self, boolean exact) {
+        if (name.isEmpty() || (exact && self == null)) return null;
         if (fnMap == null) {
             fnMap = new HashMap<String, ArrayList<Object[]>>();
             for (Node n : nodes) {
@@ -2058,7 +2230,7 @@ public class Game {
         ArrayList<Object[]> l = fnMap.get(name);
         if (l == null) return null;
         for (Object[] o : l) if (o[1] == self) return o;
-        return l.get(0);
+        return exact ? null : l.get(0);
     }
 
     // separa por comas, sin cortar dentro de comillas o paréntesis
@@ -2102,8 +2274,10 @@ public class Game {
         if (e == null) {
             if (secs <= 0 && !sp) {
                 float d = (float) num(val(b.s(rt ? "deg" : "dist"), t.self));
-                if (rt) n.rot = to ? d : n.rot + d;
-                else move(n, b, d, t.self);
+                if (rt) {
+                    n.rot = to ? d : n.rot + d;
+                    constrain(n);
+                } else move(n, b, d, t.self);
                 return 1;
             }
             if (inf && !infRun.add(b)) return 1;
@@ -2126,6 +2300,7 @@ public class Game {
             } else if (rt) {
                 float p1 = Math.min(1f, e[0] / secs), d = (float) num(val(b.s("deg"), t.self));
                 n.rot = to ? e[1] + (d - e[1]) * p1 : e[1] + d * p1;
+                constrain(n);
                 end = p1 >= 1f;
             } else {
                 float p0 = Math.min(1f, el0 / secs), p1 = Math.min(1f, e[0] / secs);
@@ -2157,6 +2332,7 @@ public class Game {
         n.x += ux * d;
         n.y += uy * d;
         boolean anti = b.b("anti");
+        if (n.par != null && n.par.type.equals("Limiter")) return constrain(n) && anti;
         if (!anti && !b.b("edge")) return false;
         float ox = n.x, oy = n.y;
         float mw = n.par != null ? n.par.w : vw, mh = n.par != null ? n.par.h : vh;
@@ -2247,8 +2423,10 @@ public class Game {
                     if (pick != null) push(t, pick, 0, 0, null);
                     break;
                 }
-                case "call": {
-                    Object[] fd = findFn(b.s("name").trim(), t.self);
+                case "call":
+                case "callNode": {
+                    boolean exact = b.t.equals("callNode");
+                    Object[] fd = findFn(b.s("name").trim(), exact ? tgt(b, t.self) : t.self, exact);
                     if (fd == null || t.stack.size() > 40) break;
                     Blk fb = (Blk) fd[0];
                     Node fnode = (Node) fd[1];
@@ -2415,6 +2593,7 @@ public class Game {
             nextId = Math.max(nextId, n.id + 1);
             initRuntimeNode(n);
         }
+        compute();
         startNodes(0);
         pump();
     }
@@ -2436,7 +2615,7 @@ public class Game {
             b.task = null;
             b.overlapping = false;
             if (b.t.equals("frame") || b.t.equals("change") || b.t.equals("every")) hasPoll = true;
-            if (b.t.equals("collision") && n.type.equals("Collision")) hasCollisionEvents = true;
+            if (n.type.equals("Collision") && collisionEvent(b.t)) hasCollisionEvents = true;
         }
     }
 
@@ -2545,7 +2724,7 @@ public class Game {
             Tw t = tws.get(i);
             t.t += dt;
             float k = t.d <= 0 ? 1f : Math.min(1f, t.t / t.d);
-            t.apply(k);
+            applyTween(t, k);
             if (k >= 1f) tws.remove(i);
         }
         for (int i = holds.size() - 1; i >= 0; i--) {
@@ -2736,6 +2915,7 @@ public class Game {
             t.x += dx;
             t.y += dy;
         }
+        constrain(t);
     }
 
     public Node hit(float vx, float vy, boolean onlyTouchable) {
@@ -3192,7 +3372,15 @@ public class Game {
                 int aa = (n.type.equals("ImageButton") && n.pressed && n.dim) ? a * 7 / 10 : a;
                 if (b != null) {
                     p.setAlpha(aa);
-                    c.drawBitmap(b, null, rf, p);
+                    Rect src = null;
+                    if (n.trimTransparent && n.type.equals("Image")) {
+                        src = trimmedBounds(n.res, b);
+                        if (src.isEmpty()) break;
+                        float sx = n.w / b.getWidth(), sy = n.h / b.getHeight();
+                        rf.set(n.wx + src.left * sx, n.wy + src.top * sy,
+                                n.wx + src.right * sx, n.wy + src.bottom * sy);
+                    }
+                    c.drawBitmap(b, src, rf, p);
                 } else if (edit) {
                     placeholder(c, n, a);
                 }
@@ -3252,6 +3440,7 @@ public class Game {
                     p.setStyle(Paint.Style.FILL);
                 }
                 break;
+            case "Limiter":
             case "Collision":
             case "Grab":
                 if (edit && !snap) placeholder(c, n, a);

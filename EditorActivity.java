@@ -80,6 +80,8 @@ public class EditorActivity extends Activity {
         {"recv", "Recibir mensaje", "E", "msg:Mensaje:M"},
         {"frame", "Cada fotograma", "E"},
         {"collision", "Al colisionar", "E", "node:Nodo con el que colisiona:H"},
+        {"collisionExit", "Al dejar de colisionar", "E", "node:Nodo con el que colisiona:H"},
+        {"collisionStay", "Mientras colisiona", "E", "node:Nodo con el que colisiona:H"},
         {"every", "Cada X segundos", "E", "secs:Segundos:N"},
         {"change", "Al cambiar una propiedad", "E", "node:Nodo:G", "prop:Propiedad:O:visible|modulate|x|y|w|h|text|rot"},
         {"orient", "Al cambiar de orientación", "E"},
@@ -87,6 +89,11 @@ public class EditorActivity extends Activity {
         {"send", "Transmitir mensaje", "S", "msg:Mensaje:M", "scope:Alcance:O:escena|nodo|jerarquía|global"},
         {"call", "Invocar función", "S", "name:Función:F", "args:Valores (separados por coma):T",
             "par:Ejecutar en paralelo (sin esperar a que termine):B", "ret:Guardar lo que devuelva en la variable:Q"},
+        {"callNode", "Invocar función de nodo", "S", "node:Nodo que tiene la función:G", "name:Función:F",
+            "args:Valores (separados por coma):T", "par:Ejecutar en paralelo (sin esperar a que termine):B",
+            "ret:Guardar lo que devuelva en la variable:Q"},
+        {"funcExists", "Comprobar función de nodo", "S", "node:Nodo que tiene la función:G", "name:Función:F",
+            "ret:Guardar verdadero o falso en la variable:Q"},
         {"return", "Devolver / salir de la función", "S", "val:Valor a devolver (opcional):V"},
         {"if", "Si", "S", "tm:Contar el tiempo de por(X):O:esperar|reloj propio", "expr:Condición:T"},
         {"elif", "Sino, Si", "S", "tm:Contar el tiempo de por(X):O:esperar|reloj propio", "expr:Condición:T"},
@@ -136,6 +143,7 @@ public class EditorActivity extends Activity {
             "secs:Segundos (0 = al instante):V"},
         {"stoprender", "Dejar de renderizar", "S", "node:Nodo:G"},
         {"startrender", "Renderizar de nuevo", "S", "node:Nodo:G"},
+        {"collisionEnable", "Activar o desactivar colisión", "S", "node:Nodo (Collision):G", "enabled:Colisión:O:true|false"},
         {"speed", "Velocidad (inicial → final)", "S", "node:Nodo:G", "dir:Dirección:O:derecha|izquierda|arriba|abajo|ángulo",
             "ang:Ángulo en grados (solo 'ángulo'):V", "v0:Velocidad inicial (píxeles por segundo):V",
             "v1:Velocidad final (píxeles por segundo):V", "ramp:Segundos para pasar de la inicial a la final:V",
@@ -143,8 +151,8 @@ public class EditorActivity extends Activity {
             "edge:No salir de los bordes:B", "anti:Antirebote (al llegar al borde se detiene del todo):B",
             "inf:Tiempo ilimitado (sigue hasta que la condición deje de cumplirse):B", "expr:Mientras:T"},
         {"text", "Cambiar texto", "S", "node:Nodo (Button):G", "val:Texto:V"},
-        {"tween", "Cambio progresivo", "S", "node:Nodo:G", "what:Qué cambia:O:modulate|mover|tamaño",
-            "x:Valor (modulate) o X:V", "y:Y (mover o tamaño):V", "secs:Segundos:N",
+        {"tween", "Cambio progresivo", "S", "node:Nodo:G", "what:Qué cambia:O:modulate|mover|tamaño|rotación",
+            "x:Valor, X o ángulo final en grados:V", "y:Y (mover o tamaño):V", "secs:Segundos:N",
                 "touch:Permitir tocar aunque la transparencia sea máxima (solo modulate):B"},
         {"vend", "Al terminar el video", "E"},
         {"vpause", "Pausar video", "S", "node:Nodo (Video):G"},
@@ -159,6 +167,8 @@ public class EditorActivity extends Activity {
     String pid;
     File dir, adir, jf, iconFile;
     Game.Node sel, scriptOwner;
+    static final int IMPORT_FONT = 4;
+    int fontNodeId = -1;
     LinearLayout list, props;
     TextView sceneLabel, tIconInfo;
     File exported;
@@ -285,6 +295,7 @@ public class EditorActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        if (b != null) fontNodeId = b.getInt("fontNodeId", -1);
         getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0xFF121212));
         pid = getIntent().getStringExtra("pid");
         if (pid == null) pid = "p_v1";
@@ -359,6 +370,12 @@ public class EditorActivity extends Activity {
         updateSceneLabel();
         rebuildList();
         rebuildProps();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putInt("fontNodeId", fontNodeId);
     }
 
     @Override
@@ -623,6 +640,12 @@ public class EditorActivity extends Activity {
                     s -> n.smartRes = Math.max(8, Math.min(256, (int) pf(s, n.smartRes))));
             if (n.type.equals("ImageButton")) {
                 check(props, "Oscurecer al tocar", n.dim, s -> n.dim = s.equals("true"));
+            } else {
+                check(props, "Recortar bordes transparentes", n.trimTransparent, s -> {
+                    n.trimTransparent = s.equals("true");
+                    pv.invalidate();
+                });
+                props.addView(label("Solo recorta el dibujo: conserva la posición visible, el pivote y la caja del nodo."));
             }
             props.addView(btn("Elegir imagen", x -> chooseAsset(true, s -> {
                 n.res = s;
@@ -636,9 +659,14 @@ public class EditorActivity extends Activity {
                     props.post(() -> rebuildProps());
                 }
             });
-        } else if (n.type.equals("Button")) {
-            field(props, "Texto del botón", n.text, TXT, s -> n.text = s);
+        } else if (n.type.equals("Button") || n.type.equals("Label")) {
+            field(props, "Texto", n.text, TXT, s -> n.text = s);
             field(props, "Tamaño del texto", trimf(n.tsize), NUM, s -> n.tsize = Math.max(4f, pf(s, n.tsize)));
+            if (n.type.equals("Label")) {
+                props.addView(label("Fuente: " + (n.font.isEmpty() ? "Predeterminada" : n.font)));
+                props.addView(btn("Agregar fuente (.ttf o .otf)", x -> chooseFont(n)));
+                nodeColor(n, "Color del texto");
+            }
         } else if (n.type.equals("Sound")) {
             props.addView(label("Recurso: " + (n.snd.isEmpty() ? "(ninguno)" : n.snd)));
             props.addView(btn("Elegir sonido", x -> chooseAsset(false, s -> {
@@ -739,25 +767,19 @@ public class EditorActivity extends Activity {
         }
 
         if (n.type.equals("Color")) {
-            props.addView(label("Color del recuadro"));
-            final View sw = new View(this);
-            sw.setBackgroundColor(n.color | 0xFF000000);
-            props.addView(sw, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
-            props.addView(btn("Elegir color", x -> colorDialog(n.color, s -> {
-                try {
-                    n.color = 0xFF000000 | Integer.parseInt(s, 16);
-                } catch (Exception e) {
-                }
-                sw.setBackgroundColor(n.color);
-                pv.invalidate();
-            })));
+            nodeColor(n, "Color del recuadro");
             props.addView(label("Se ve completo con modulate 1.0; menos modulate lo vuelve transparente."));
         } else if (n.type.equals("Anchor")) {
             props.addView(label("Punto de giro. En otro nodo (o en un Agarre) elígelo como Ancla: el objeto rotará alrededor de este punto. "
                     + "Solo se ve en el editor."));
+        } else if (n.type.equals("Limiter")) {
+            props.addView(label("Caja invisible. Asigna este nodo como padre del objeto que quieras limitar. "
+                    + "En juego, el hijo directo no saldrá de la caja al moverse, cambiar de tamaño o rotar. "
+                    + "Si no cabe, se reduce para ajustarlo. Sin 'Seguir al padre', se usan los ejes globales."));
         } else if (n.type.equals("Collision")) {
-            props.addView(label("Área rectangular invisible durante el juego. Agrega el evento 'Al colisionar' "
-                    + "a este nodo y elige el otro nodo. Se ejecuta al empezar cada solapamiento, sin bloquear el movimiento."));
+            check(props, "Colisión activa al iniciar", n.collisionEnabled, s -> n.collisionEnabled = s.equals("true"));
+            props.addView(label("Área invisible que detecta solapamientos sin bloquear el movimiento. "
+                    + "Usa sus eventos de entrada, permanencia y salida, o elige 'Colisión entre nodos' en una condición."));
         } else if (n.type.equals("Grab")) {
             props.addView(label("Área que se agarra con el dedo. Si es hijo de un objeto, lo agarra a él."));
             nodePicker("Objeto a agarrar (vacío = el padre de este nodo)", null, n.gtarget, s -> n.gtarget = s);
@@ -827,6 +849,23 @@ public class EditorActivity extends Activity {
             }
         });
         props.addView(sp);
+    }
+
+    void nodeColor(Game.Node n, String title) {
+        final Button swatch = btn(title, x -> colorDialog(n.color, s -> {
+            n.color = 0xFF000000 | Integer.parseInt(s, 16);
+            x.setBackgroundColor(n.color);
+            ((Button) x).setTextColor(colorContrast(n.color));
+            pv.invalidate();
+        }));
+        swatch.setBackgroundColor(n.color);
+        swatch.setTextColor(colorContrast(n.color));
+        props.addView(swatch);
+    }
+
+    static int colorContrast(int color) {
+        int light = 299 * ((color >> 16) & 255) + 587 * ((color >> 8) & 255) + 114 * (color & 255);
+        return light >= 128000 ? 0xFF000000 : 0xFFFFFFFF;
     }
 
     // Selector de color: rojo, verde, azul o código hexadecimal RRGGBB
@@ -947,6 +986,36 @@ public class EditorActivity extends Activity {
         b.setNegativeButton("Cancelar", null).show();
     }
 
+    static boolean isFont(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".ttf") || lower.endsWith(".otf");
+    }
+
+    void chooseFont(Game.Node node) {
+        ArrayList<String> names = new ArrayList<String>();
+        File[] files = adir.listFiles();
+        if (files != null) for (File f : files) if (isFont(f.getName())) names.add(f.getName());
+        Collections.sort(names);
+        names.add(0, "Predeterminada");
+        new AlertDialog.Builder(this).setTitle("Fuente del texto")
+                .setItems(names.toArray(new String[0]), (d, i) -> setFont(node, i == 0 ? "" : names.get(i)))
+                .setNeutralButton("Importar fuente…", (d, w) -> {
+                    fontNodeId = node.id;
+                    Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    pick.addCategory(Intent.CATEGORY_OPENABLE);
+                    // Algunos proveedores Android catalogan las fuentes como archivos genéricos.
+                    pick.setType("*/*");
+                    startActivityForResult(pick, IMPORT_FONT);
+                }).setNegativeButton("Cancelar", null).show();
+    }
+
+    void setFont(Game.Node node, String name) {
+        node.font = name;
+        save();
+        rebuildProps();
+        pv.invalidate();
+    }
+
     void startImport() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
@@ -962,7 +1031,7 @@ public class EditorActivity extends Activity {
         Collections.sort(all);
         AlertDialog.Builder b = new AlertDialog.Builder(this).setTitle("Assets del proyecto");
         if (all.isEmpty()) {
-            b.setMessage("Aún no hay assets. Importa imágenes (png, jpg, webp), sonidos (ogg, mp3, wav) y videos (mp4, webm, mkv).");
+            b.setMessage("Aún no hay assets. Importa imágenes, sonidos, videos y fuentes (.ttf, .otf).");
         } else {
             b.setItems(all.toArray(new String[0]), (d, i) -> {
                 final String nm = all.get(i);
@@ -989,15 +1058,24 @@ public class EditorActivity extends Activity {
     }
 
     void importOne(Uri u) throws IOException {
-        String nm = nameOf(u).replaceAll("[^A-Za-z0-9._-]", "_");
+        importAsset(u, nameOf(u));
+    }
+
+    File importAsset(Uri u, String name) throws IOException {
+        String nm = name.replaceAll("[^A-Za-z0-9._-]", "_");
         File f = new File(adir, nm);
         int k = 1;
         while (f.exists()) f = new File(adir, (k++) + "_" + nm);
         try (InputStream i = getContentResolver().openInputStream(u); OutputStream o = new FileOutputStream(f)) {
+            if (i == null) throw new IOException("No pude abrir el archivo");
             byte[] buf = new byte[16384];
             int n;
-            while ((n = i.read(buf)) > 0) o.write(buf, 0, n);
+            while ((n = i.read(buf)) != -1) o.write(buf, 0, n);
+        } catch (IOException e) {
+            f.delete();
+            throw e;
         }
+        return f;
     }
 
     // Recorta la imagen elegida en un cuadrado de 192 x 192 y la guarda como ícono del proyecto
@@ -1027,9 +1105,26 @@ public class EditorActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent d) {
         super.onActivityResult(req, res, d);
+        int requestedNode = fontNodeId;
+        if (req == IMPORT_FONT) fontNodeId = -1;
         if (res != RESULT_OK || d == null) return;
         try {
-            if (req == 1) {
+            if (req == IMPORT_FONT && d.getData() != null) {
+                String name = nameOf(d.getData());
+                if (!isFont(name)) throw new IOException("Elige un archivo .ttf o .otf");
+                for (Game.Node node : g.allNodes()) if (node.id == requestedNode && node.type.equals("Label")) {
+                    File font = importAsset(d.getData(), name);
+                    try {
+                        android.graphics.Typeface.createFromFile(font);
+                    } catch (RuntimeException invalid) {
+                        font.delete();
+                        throw new IOException("No pude leer la fuente");
+                    }
+                    setFont(node, font.getName());
+                    toast("Fuente agregada");
+                    break;
+                }
+            } else if (req == 1) {
                 int cnt = 0;
                 ClipData cd = d.getClipData();
                 if (cd != null) {
@@ -1308,9 +1403,9 @@ public class EditorActivity extends Activity {
         return v;
     }
 
-    TreeSet<String> funcNames() {
+    TreeSet<String> funcNames(Iterable<Game.Node> nodes) {
         TreeSet<String> r = new TreeSet<String>();
-        for (Game.Node n : g.allNodes()) {
+        for (Game.Node n : nodes) {
             for (Game.Blk e : n.script) {
                 if (e.t.equals("func") && !e.s("name").trim().isEmpty()) r.add(e.s("name").trim());
             }
@@ -1454,9 +1549,7 @@ public class EditorActivity extends Activity {
             return;
         }
         if (kind.equals("F")) {
-            TreeSet<String> fn = funcNames();
-            if (fn.isEmpty()) toast("Aún no hay funciones: crea una con el evento Función");
-            else listChooser("Elegir función", fn, null, e);
+            pickFunction(e, g.nodes);
             return;
         }
         final String[] cats = {"Una variable", "Propiedad de un nodo (x, y, visible…)", "Valor de un enum",
@@ -1467,6 +1560,12 @@ public class EditorActivity extends Activity {
             else if (i == 2) enumChooser(e);
             else e.setText(i == 3 ? "true" : "false");
         }).show();
+    }
+
+    void pickFunction(EditText field, Iterable<Game.Node> nodes) {
+        TreeSet<String> names = funcNames(nodes);
+        if (names.isEmpty()) toast("No hay funciones en el nodo o escena seleccionados");
+        else listChooser("Elegir función", names, null, field);
     }
 
     // Editor de listas separadas por coma: variables a guardar (L) o valores de un enum (E)
@@ -1821,7 +1920,7 @@ public class EditorActivity extends Activity {
         final ArrayList<String> types = new ArrayList<String>();
         ArrayList<String> labels = new ArrayList<String>();
         for (String[] s : SPEC) {
-            if (s[0].equals("collision") && (scriptOwner == null || !scriptOwner.type.equals("Collision"))) continue;
+            if (Game.collisionEvent(s[0]) && (scriptOwner == null || !scriptOwner.type.equals("Collision"))) continue;
             boolean cs = s[0].equals("case") || s[0].equals("default");
             if (s[2].equals("E") == events && cs == inMatch) {
                 types.add(s[0]);
@@ -1879,7 +1978,14 @@ public class EditorActivity extends Activity {
                 } else {
                     LinearLayout r = new LinearLayout(this);
                     r.addView(e, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-                    r.addView(btn("▼", x -> pickValue(e, kind)));
+                    r.addView(btn("▼", x -> {
+                        if (kind.equals("F") && (b.t.equals("callNode") || b.t.equals("funcExists"))) {
+                            Spinner nodes = (Spinner) views.get(keys.indexOf("node"));
+                            String selected = String.valueOf(nodes.getSelectedItem());
+                            Game.Node owner = selected.equals("self") ? scriptOwner : g.byName(selected);
+                            pickFunction(e, owner == null ? Collections.emptyList() : Collections.singletonList(owner));
+                        } else pickValue(e, kind);
+                    }));
                     v.addView(r);
                 }
             } else if (kind.equals("B")) {
@@ -2116,6 +2222,7 @@ public class EditorActivity extends Activity {
         if (!b.t.equals("while")) it.add("Tiempo  ▸");
         it.add("Probabilidad  ▸");
         it.add("Tocar  ▸");
+        it.add("Colisión entre nodos  ▸");
         new AlertDialog.Builder(this).setTitle("Condiciones").setItems(it.toArray(new String[0]), (d, i) -> {
             String s = it.get(i);
             if (s.startsWith("Una")) varChooser(proxy(ex), false);
@@ -2128,8 +2235,37 @@ public class EditorActivity extends Activity {
                     "La condición debe mantenerse cumplida todo ese tiempo.", "por", false, back);
             else if (s.startsWith("Prob")) numDialog(ex, "Probabilidad", "Con probabilidad", "(0 a 1)",
                     "De 0 a 1 con decimales: 0,5 = 50%, 0,9 = 90%, 1 = siempre.", "prob", true, back);
+            else if (s.startsWith("Colisión")) collisionCondition(ex, back);
             else touchMenu(ex, back);
         }).setNegativeButton("Atrás", (d, w) -> back.run()).show();
+    }
+
+    void collisionCondition(EditText ex, Runnable back) {
+        ArrayList<Game.Node> areas = new ArrayList<Game.Node>();
+        ArrayList<String> names = new ArrayList<String>();
+        for (Game.Node n : g.nodes) if (n.type.equals("Collision")) {
+            areas.add(n);
+            names.add(n.name);
+        }
+        if (areas.isEmpty()) {
+            toast("Agrega un nodo Collision primero");
+            back.run();
+            return;
+        }
+        new AlertDialog.Builder(this).setTitle("Elegir Collision").setItems(names.toArray(new String[0]), (d, i) -> {
+            Game.Node area = areas.get(i);
+            ArrayList<String> targets = new ArrayList<String>();
+            for (Game.Node n : g.nodes) if (n != area) targets.add(n.name);
+            AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("¿Con qué nodo?");
+            if (targets.isEmpty()) dialog.setMessage("Agrega otro nodo para detectar el solapamiento.");
+            else dialog.setItems(targets.toArray(new String[0]), (d2, j) -> ins(ex, "colisiona("
+                    + collisionArg(area.name) + ", " + collisionArg(targets.get(j)) + ")", true));
+            dialog.setNegativeButton("Atrás", (d2, w) -> back.run()).show();
+        }).setNegativeButton("Atrás", (d, w) -> back.run()).show();
+    }
+
+    String collisionArg(String name) {
+        return scriptOwner != null && name.equals(scriptOwner.name) ? "self" : org.json.JSONObject.quote(name);
     }
 
     // Cuadro "Por [X] tiempo" / "Con probabilidad [X]": escribe por(X) / prob(X) en la condición
